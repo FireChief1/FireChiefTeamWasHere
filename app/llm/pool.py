@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import TypeVar
 
 import httpx
@@ -42,7 +42,7 @@ class LLMCallError(LLMPoolError):
     """Raised when an LLM call fails after all retries are exhausted."""
 
 
-class Capability(str, Enum):
+class Capability(StrEnum):
     """A role-based capability that an LLM node can serve."""
 
     CODER = "coder"
