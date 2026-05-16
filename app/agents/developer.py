@@ -61,8 +61,9 @@ class DeveloperAgent(BaseAgent[CodeOutput]):
             "follows PEP 8 and uses Google-style docstrings.\n\n"
             "Return your work as structured output: a list of files, each "
             "with a filename and its complete content, plus a one-sentence "
-            "summary. Write only the code the task requires; do not add "
-            "unrelated files or commentary.\n\n"
+            "summary. Write only the implementation code the task requires. "
+            "Do not write test files or test code -- a separate QA agent "
+            "handles testing. Do not add unrelated files or commentary.\n\n"
             "When you are given issues to fix, change only what the issues "
             "describe and leave working code intact."
         )
