@@ -314,3 +314,20 @@ def build_default_pool() -> LLMPool:
         capabilities={Capability.CODER, Capability.REASONER, Capability.FALLBACK},
     )
     return LLMPool(nodes=[core_node])
+
+
+_pool: LLMPool | None = None
+
+
+def get_pool() -> LLMPool:
+    """Return the process-wide LLM pool, building it on first use."""
+    global _pool
+    if _pool is None:
+        _pool = build_default_pool()
+    return _pool
+
+
+def set_pool(pool: LLMPool) -> None:
+    """Replace the process-wide pool. Intended for tests."""
+    global _pool
+    _pool = pool

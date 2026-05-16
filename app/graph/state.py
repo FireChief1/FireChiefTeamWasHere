@@ -60,6 +60,7 @@ class AgentState(TypedDict, total=False):
 
     Attributes:
         task: The original task description from the user.
+        task_id: A short unique identifier for this task run.
         mode: Whether the workflow generates new code or reviews existing code.
         plan: The ordered implementation steps from the Analyst.
         code: The generated source files, keyed by filename.
@@ -76,6 +77,7 @@ class AgentState(TypedDict, total=False):
     """
 
     task: str
+    task_id: str
     mode: Literal["generate", "review"]
     plan: list[str]
     code: dict[str, str]
