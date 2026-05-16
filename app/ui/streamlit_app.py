@@ -31,6 +31,7 @@ DEFAULT_TASK = (
 )
 
 STAGES: list[tuple[str, str]] = [
+    ("rag", "RAG"),
     ("analyst", "Analyst"),
     ("developer", "Developer"),
     ("reviewer", "Reviewer"),
@@ -54,6 +55,7 @@ def render_tracker(box: Any, statuses: dict[str, str], iteration: int) -> None:
 def next_stage(node: str, update: dict[str, Any]) -> str | None:
     """Return the stage that becomes active after `node` completes."""
     linear = {
+        "rag": "analyst",
         "analyst": "developer",
         "developer": "reviewer",
         "reviewer": "qa",
@@ -74,7 +76,15 @@ def render_node_detail(node: str, update: dict[str, Any], iteration: int) -> Non
     """Add an expander showing the full output of a completed agent."""
     label = _LABELS.get(node, node)
     with st.expander(f"✅ {label}  ·  iterasyon {iteration}", expanded=True):
-        if node == "analyst":
+        if node == "rag":
+            sources = update.get("rag_sources") or []
+            if sources:
+                st.markdown(f"Bilgi tabanından **{len(sources)} parça** çekti:")
+                for source in sources:
+                    st.markdown(f"- `{source}`")
+            else:
+                st.info("RAG bağlamı yok — standartsız devam ediliyor.")
+        elif node == "analyst":
             steps = update.get("plan") or []
             st.markdown(f"Görevi **{len(steps)} adıma** böldü:")
             for index, step in enumerate(steps, 1):
@@ -165,7 +175,7 @@ async def run_workflow(
         "status": "RUNNING",
     }
 
-    statuses["analyst"] = "active"
+    statuses["rag"] = "active"
     render_tracker(tracker_box, statuses, iteration)
     status_box.info("Ajanlar çalışıyor...")
 

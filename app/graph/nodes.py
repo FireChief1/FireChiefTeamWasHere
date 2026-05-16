@@ -8,8 +8,11 @@ all through the workspace MCP server, which enforces the workspace boundary.
 from __future__ import annotations
 
 import ast
+import asyncio
 import re
 from typing import Any
+
+from loguru import logger
 
 from app.agents.analyst import AnalystAgent
 from app.agents.developer import DeveloperAgent
@@ -19,7 +22,23 @@ from app.config import settings
 from app.graph.error_boundary import node_error_boundary
 from app.graph.state import AgentState, FeedbackItem, TestResults
 from app.llm.pool import get_pool
+from app.rag.retriever import retrieve
 from app.tools.mcp_client import workspace_tools
+
+
+@node_error_boundary
+async def rag_node(state: AgentState) -> dict[str, Any]:
+    """Retrieve coding-standard chunks relevant to the task (RAG).
+
+    Runs first so every agent downstream sees the retrieved context. If the
+    knowledge base is unavailable, the workflow continues without context.
+    """
+    chunks = await asyncio.to_thread(retrieve, state["task"])
+    logger.info(f"RAG: retrieved {len(chunks)} chunk(s)")
+    return {
+        "rag_context": [f"[{chunk.source}]\n{chunk.text}" for chunk in chunks],
+        "rag_sources": [chunk.source for chunk in chunks],
+    }
 
 
 @node_error_boundary
@@ -62,6 +81,21 @@ async def qa_node(state: AgentState) -> dict[str, Any]:
     code = state.get("code") or {}
     test_code = _strip_code_fences(result.test_code)
     test_file = _build_test_imports(test_code, code) + test_code
+
+    # Guard: a syntactically broken test would poison the loop with a BLOCKER
+    # the Developer cannot fix. Skip running it instead of failing the task.
+    try:
+        ast.parse(test_file)
+    except SyntaxError as exc:
+        logger.warning(f"QA produced a syntactically invalid test: {exc}")
+        return {
+            "test_results": TestResults(
+                passed=0,
+                failed=0,
+                total=0,
+                output=f"QA test skipped -- syntax error: {exc}",
+            )
+        }
 
     async with workspace_tools() as tools:
         for filename, content in code.items():

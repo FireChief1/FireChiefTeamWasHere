@@ -13,7 +13,13 @@ from typing import TYPE_CHECKING
 from langgraph.graph import END, START, StateGraph
 
 from app.graph.integrator import integrator_node
-from app.graph.nodes import analyst_node, developer_node, qa_node, reviewer_node
+from app.graph.nodes import (
+    analyst_node,
+    developer_node,
+    qa_node,
+    rag_node,
+    reviewer_node,
+)
 from app.graph.state import AgentState
 from app.graph.supervisor import route_after_supervisor, supervisor_node
 
@@ -35,6 +41,7 @@ def build_workflow() -> CompiledStateGraph:
 
     # The add_node calls are suppressed below: the node functions are valid
     # LangGraph nodes at runtime but do not match LangGraph's typed overloads.
+    graph.add_node("rag", rag_node)  # type: ignore[call-overload]
     graph.add_node("analyst", analyst_node)  # type: ignore[call-overload]
     graph.add_node("developer", developer_node)  # type: ignore[call-overload]
     graph.add_node("reviewer", reviewer_node)  # type: ignore[call-overload]
@@ -42,7 +49,8 @@ def build_workflow() -> CompiledStateGraph:
     graph.add_node("supervisor", supervisor_node)  # type: ignore[call-overload]
     graph.add_node("integrator", integrator_node)  # type: ignore[call-overload]
 
-    graph.add_edge(START, "analyst")
+    graph.add_edge(START, "rag")
+    graph.add_edge("rag", "analyst")
     graph.add_edge("analyst", "developer")
     graph.add_edge("developer", "reviewer")
     graph.add_edge("reviewer", "qa")

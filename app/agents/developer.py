@@ -97,7 +97,10 @@ class DeveloperAgent(BaseAgent[CodeOutput]):
         rag_context = state.get("rag_context") or []
         if rag_context:
             parts.append(
-                "RELEVANT CODING STANDARDS:\n" + "\n---\n".join(rag_context)
+                "REFERENCE -- coding standards that may be relevant. Apply "
+                "only what genuinely fits this task; do not adopt a library "
+                "or pattern merely because it appears here:\n"
+                + "\n---\n".join(rag_context)
             )
 
         feedback = state.get("review_feedback") or []

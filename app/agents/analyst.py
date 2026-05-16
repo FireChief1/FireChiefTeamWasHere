@@ -52,6 +52,8 @@ class AnalystAgent(BaseAgent[PlanOutput]):
         rag_context = state.get("rag_context") or []
         if rag_context:
             parts.append(
-                "RELEVANT CODING STANDARDS:\n" + "\n---\n".join(rag_context)
+                "REFERENCE -- coding standards that may be relevant. Use only "
+                "what genuinely fits this task:\n"
+                + "\n---\n".join(rag_context)
             )
         return "\n\n".join(parts)

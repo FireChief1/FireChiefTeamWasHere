@@ -70,6 +70,9 @@ class ReviewerAgent(BaseAgent[ReviewOutput]):
         rag_context = state.get("rag_context") or []
         if rag_context:
             parts.append(
-                "RELEVANT REVIEW STANDARDS:\n" + "\n---\n".join(rag_context)
+                "REFERENCE -- review standards that may be relevant. Judge "
+                "the code against these where they apply; do not raise issues "
+                "that are not real problems:\n"
+                + "\n---\n".join(rag_context)
             )
         return "\n\n".join(parts)

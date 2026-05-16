@@ -67,6 +67,7 @@ class AgentState(TypedDict, total=False):
         dev_approach: The Developer's explanation of how it approached the task.
         dev_assumptions: Assumptions and uncertainties the Developer noted.
         rag_context: Coding-standard chunks retrieved for the current step.
+        rag_sources: The document names the RAG chunks were retrieved from.
         review_feedback: Findings from the Reviewer.
         test_results: The outcome from the QA agent.
         iteration: The current Developer-Reviewer loop iteration.
@@ -86,6 +87,7 @@ class AgentState(TypedDict, total=False):
     dev_approach: str
     dev_assumptions: list[str]
     rag_context: list[str]
+    rag_sources: list[str]
     review_feedback: list[FeedbackItem]
     test_results: TestResults
     iteration: int
