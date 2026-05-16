@@ -1,21 +1,15 @@
 """LangGraph nodes that wrap the LLM agents.
 
 Each node runs one agent against the workflow state and returns a state
-update. The QA node additionally writes the code and tests to disk and runs
-pytest, since the workflow's looping decision depends on real test results.
+update. The QA node additionally writes the code and tests and runs pytest --
+all through the workspace MCP server, which enforces the workspace boundary.
 """
 
 from __future__ import annotations
 
 import ast
-import asyncio
 import re
-import subprocess
-import sys
-from pathlib import Path
 from typing import Any
-
-from loguru import logger
 
 from app.agents.analyst import AnalystAgent
 from app.agents.developer import DeveloperAgent
@@ -25,6 +19,7 @@ from app.config import settings
 from app.graph.error_boundary import node_error_boundary
 from app.graph.state import AgentState, FeedbackItem, TestResults
 from app.llm.pool import get_pool
+from app.tools.mcp_client import workspace_tools
 
 
 @node_error_boundary
@@ -56,22 +51,25 @@ async def reviewer_node(state: AgentState) -> dict[str, Any]:
 
 @node_error_boundary
 async def qa_node(state: AgentState) -> dict[str, Any]:
-    """Run the QA agent, write code and tests to disk, and run pytest.
+    """Run the QA agent, then write code and tests and run pytest via MCP.
 
-    A test failure is folded into ``review_feedback`` as a BLOCKER finding so
-    the Developer sees it through the same channel as review findings.
+    A test failure is folded into ``review_feedback`` as a BLOCKER finding
+    carrying the pytest output, so the Developer sees the specific failures.
     """
     result = await QAAgent(get_pool()).run(state)
 
-    task_dir = _task_dir(state)
-    task_dir.mkdir(parents=True, exist_ok=True)
-    for filename, content in (state.get("code") or {}).items():
-        (task_dir / filename).write_text(content)
+    task_rel = f"task-{state['task_id']}"
+    code = state.get("code") or {}
     test_code = _strip_code_fences(result.test_code)
-    test_header = _build_test_imports(test_code, state.get("code") or {})
-    (task_dir / result.test_filename).write_text(test_header + test_code)
+    test_file = _build_test_imports(test_code, code) + test_code
 
-    test_results = await asyncio.to_thread(_run_pytest, task_dir)
+    async with workspace_tools() as tools:
+        for filename, content in code.items():
+            await tools.write_file(f"{task_rel}/{filename}", content)
+        await tools.write_file(f"{task_rel}/{result.test_filename}", test_file)
+        output = await tools.run_pytest(task_rel, timeout=settings.test_timeout)
+
+    test_results = _parse_pytest(output)
     update: dict[str, Any] = {"test_results": test_results}
 
     if test_results.failed > 0:
@@ -95,41 +93,12 @@ async def qa_node(state: AgentState) -> dict[str, Any]:
     return update
 
 
-def _task_dir(state: AgentState) -> Path:
-    """Return the isolated workspace directory for the current task."""
-    return settings.workspace_dir / f"task-{state['task_id']}"
-
-
-def _run_pytest(task_dir: Path) -> TestResults:
-    """Run pytest in the task directory under a hard timeout.
-
-    The timeout (EC-11) prevents an infinite loop in generated code from
-    freezing the whole workflow.
-    """
-    try:
-        proc = subprocess.run(
-            [
-                sys.executable, "-m", "pytest",
-                "-q", "--tb=short", "-p", "no:cacheprovider",
-            ],
-            cwd=str(task_dir),
-            capture_output=True,
-            text=True,
-            timeout=settings.test_timeout,
-        )
-    except subprocess.TimeoutExpired:
-        logger.warning("pytest timed out -- treating as a failed test")
-        return TestResults(
-            passed=0,
-            failed=1,
-            total=1,
-            output="test execution timed out -- possible infinite loop",
-        )
-
-    output = proc.stdout + proc.stderr
+def _parse_pytest(output: str) -> TestResults:
+    """Parse raw pytest output into a TestResults summary."""
+    if output.startswith("TIMEOUT:"):
+        return TestResults(passed=0, failed=1, total=1, output=output)
     passed = _count(r"(\d+) passed", output)
     failed = _count(r"(\d+) failed", output) + _count(r"(\d+) error", output)
-    logger.info(f"pytest: {passed} passed, {failed} failed")
     return TestResults(
         passed=passed,
         failed=failed,

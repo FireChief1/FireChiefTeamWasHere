@@ -1,53 +1,34 @@
 """The Integrator node.
 
 The Integrator is deterministic. It runs only after a SUCCESS result. It
-writes the final code into the task workspace and makes a local git commit on
-a feature branch. It never pushes to a remote -- pushing is a human-gated
-action performed from the UI.
+writes the final code and commits it on a local feature branch -- all through
+the workspace MCP server. It never pushes to a remote; pushing is a
+human-gated action performed from the UI.
 """
 
 from __future__ import annotations
 
-import asyncio
-import subprocess
-from pathlib import Path
 from typing import Any
 
 from loguru import logger
 
-from app.config import settings
 from app.graph.error_boundary import node_error_boundary
 from app.graph.state import AgentState
+from app.tools.mcp_client import workspace_tools
 
 
 @node_error_boundary
 async def integrator_node(state: AgentState) -> dict[str, Any]:
-    """Write the final code and make a local git commit on a feature branch."""
-    task_dir = settings.workspace_dir / f"task-{state['task_id']}"
-    task_dir.mkdir(parents=True, exist_ok=True)
-    for filename, content in (state.get("code") or {}).items():
-        (task_dir / filename).write_text(content)
+    """Write the final code and commit it on a local feature branch via MCP."""
+    task_rel = f"task-{state['task_id']}"
+    branch = f"feat/{task_rel}"
+    code = state.get("code") or {}
+    subject = state["task"].strip().splitlines()[0][:60]
 
-    branch = f"feat/task-{state['task_id']}"
-    await asyncio.to_thread(_git_commit, task_dir, branch, state["task"])
-    logger.info(f"integrator: committed code to local branch '{branch}'")
+    async with workspace_tools() as tools:
+        for filename, content in code.items():
+            await tools.write_file(f"{task_rel}/{filename}", content)
+        message = await tools.git_commit(task_rel, f"feat: {subject}", branch)
+
+    logger.info(f"integrator: {message}")
     return {}
-
-
-def _git_commit(task_dir: Path, branch: str, task: str) -> None:
-    """Initialize a local git repo if needed and commit the task directory."""
-
-    def git(*args: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            ["git", *args],
-            cwd=str(task_dir),
-            capture_output=True,
-            text=True,
-        )
-
-    if not (task_dir / ".git").exists():
-        git("init", "-q")
-        git("checkout", "-q", "-b", branch)
-    git("add", "-A")
-    subject = task.strip().splitlines()[0][:60]
-    git("commit", "-q", "-m", f"feat: {subject}")
