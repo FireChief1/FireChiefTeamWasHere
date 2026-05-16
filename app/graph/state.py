@@ -64,6 +64,8 @@ class AgentState(TypedDict, total=False):
         mode: Whether the workflow generates new code or reviews existing code.
         plan: The ordered implementation steps from the Analyst.
         code: The generated source files, keyed by filename.
+        dev_approach: The Developer's explanation of how it approached the task.
+        dev_assumptions: Assumptions and uncertainties the Developer noted.
         rag_context: Coding-standard chunks retrieved for the current step.
         review_feedback: Findings from the Reviewer.
         test_results: The outcome from the QA agent.
@@ -81,6 +83,8 @@ class AgentState(TypedDict, total=False):
     mode: Literal["generate", "review"]
     plan: list[str]
     code: dict[str, str]
+    dev_approach: str
+    dev_assumptions: list[str]
     rag_context: list[str]
     review_feedback: list[FeedbackItem]
     test_results: TestResults

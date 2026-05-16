@@ -41,7 +41,9 @@ async def developer_node(state: AgentState) -> dict[str, Any]:
     return {
         "code": {
             f.filename: _strip_code_fences(f.content) for f in result.files
-        }
+        },
+        "dev_approach": result.approach,
+        "dev_assumptions": result.assumptions,
     }
 
 
@@ -77,8 +79,15 @@ async def qa_node(state: AgentState) -> dict[str, Any]:
         feedback.append(
             FeedbackItem(
                 severity="BLOCKER",
-                issue=f"{test_results.failed} test(s) failed.",
-                suggestion="Fix the implementation so that all tests pass.",
+                issue=(
+                    f"{test_results.failed} test(s) failed. The pytest output "
+                    f"below shows exactly which tests failed and why:\n"
+                    f"{test_results.output[-1500:]}"
+                ),
+                suggestion=(
+                    "Fix the implementation so every failing test passes. "
+                    "Address the specific assertion errors and exceptions shown."
+                ),
             )
         )
         update["review_feedback"] = feedback

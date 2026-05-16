@@ -31,10 +31,21 @@ class CodeOutput(BaseModel):
     """The Developer agent's structured output.
 
     Attributes:
+        approach: How the Developer approached the task and its key decisions.
+        assumptions: Assumptions made and edge cases the Developer was unsure of.
         files: The generated source files.
         summary: A one-sentence summary of what was built or changed.
     """
 
+    approach: str = Field(
+        description="How you approached the task: the design and key decisions."
+    )
+    assumptions: list[str] = Field(
+        description=(
+            "Assumptions and decisions you made where the task was ambiguous, "
+            "plus any edge cases you were unsure about or did not fully handle."
+        )
+    )
     files: list[CodeFile] = Field(description="The generated source files.")
     summary: str = Field(description="One-sentence summary of the work.")
 
@@ -59,13 +70,19 @@ class DeveloperAgent(BaseAgent[CodeOutput]):
             "You are a senior Python developer on a code development team. "
             "You write clean, correct, fully type-hinted Python code that "
             "follows PEP 8 and uses Google-style docstrings.\n\n"
-            "Return your work as structured output: a list of files, each "
-            "with a filename and its complete content, plus a one-sentence "
-            "summary. Write only the implementation code the task requires. "
-            "Do not write test files or test code -- a separate QA agent "
-            "handles testing. Do not add unrelated files or commentary.\n\n"
-            "When you are given issues to fix, change only what the issues "
-            "describe and leave working code intact."
+            "Return your work as structured output:\n"
+            "- approach: explain how you approached the task and the key "
+            "design decisions you made.\n"
+            "- assumptions: list the assumptions and decisions you made where "
+            "the task was ambiguous, and honestly note any edge cases you "
+            "were unsure about or did not fully handle.\n"
+            "- files: the source files, each with a filename and complete "
+            "content.\n"
+            "- summary: a one-sentence summary.\n\n"
+            "Write only the implementation code the task requires. Do not "
+            "write test files or test code -- a separate QA agent handles "
+            "testing. When you are given issues to fix, change only what the "
+            "issues describe and leave working code intact."
         )
 
     def build_user_message(self, state: AgentState) -> str:
