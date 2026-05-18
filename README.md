@@ -55,10 +55,13 @@ pip install -e ".[dev]"
 # 3. Configure environment
 cp .env.example .env
 
-# 4. Ingest the knowledge base into RAG
+# 4. Start the Postgres database (stores run history)
+docker compose up -d
+
+# 5. Ingest the knowledge base into RAG
 python -m app.rag.ingest
 
-# 5. Run the UI
+# 6. Run the UI
 streamlit run app/ui/streamlit_app.py
 ```
 
@@ -72,6 +75,7 @@ app/
 ├── graph/           # LangGraph workflow, supervisor, integrator
 ├── rag/             # ChromaDB ingestion and retrieval
 ├── tools/           # MCP tool integration
+├── history.py       # Postgres-backed run history
 └── ui/              # Streamlit interface
 docs/                # engineering standards + architecture (RAG knowledge base)
 tests/               # test suite

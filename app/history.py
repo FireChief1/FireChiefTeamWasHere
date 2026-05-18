@@ -1,30 +1,27 @@
-"""Persistent history of workflow runs, stored in a local SQLite database.
+"""Persistent history of workflow runs, stored in a Postgres database.
 
-Each finished run is summarized into one row. SQLite is part of the Python
-standard library, so this needs no server, no Docker, and no extra dependency
--- the database is a single file under the workspace directory, which is
-git-ignored. SQLite's file locking also makes concurrent writes safe.
+Postgres runs as a Docker container (see docker-compose.yml). If the database
+is unreachable, the history feature degrades gracefully -- the panel is simply
+empty and writes are skipped -- so the rest of the workflow is unaffected.
 """
 
 from __future__ import annotations
 
 import json
-import sqlite3
-from contextlib import closing
 from datetime import datetime
 from typing import Any
 
+import psycopg
 from loguru import logger
 
 from app.config import settings
 
-_DB_FILE = settings.workspace_dir / "history.db"
 _MAX_ENTRIES = 50
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp TEXT NOT NULL,
+    id SERIAL PRIMARY KEY,
+    created_at TEXT NOT NULL,
     task_id TEXT NOT NULL,
     task TEXT NOT NULL,
     status TEXT NOT NULL,
@@ -36,18 +33,17 @@ CREATE TABLE IF NOT EXISTS runs (
 """
 
 
-def _connect() -> sqlite3.Connection:
-    """Open the history database, creating the file and schema if needed."""
-    _DB_FILE.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(_DB_FILE)
-    connection.row_factory = sqlite3.Row
-    connection.execute(_SCHEMA)
+def _connect() -> psycopg.Connection:
+    """Open a database connection and ensure the schema exists."""
+    connection = psycopg.connect(settings.database_url, connect_timeout=5)
+    with connection.cursor() as cursor:
+        cursor.execute(_SCHEMA)
     connection.commit()
     return connection
 
 
 def record_run(state: dict[str, Any]) -> None:
-    """Append a summary of a finished workflow run to the history database.
+    """Append a summary of a finished workflow run to the database.
 
     Args:
         state: The final workflow state.
@@ -64,14 +60,14 @@ def record_run(state: dict[str, Any]) -> None:
         test_results.failed if test_results else 0,
     )
     try:
-        with closing(_connect()) as connection, connection:
-            connection.execute(
-                "INSERT INTO runs (timestamp, task_id, task, status, "
+        with _connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO runs (created_at, task_id, task, status, "
                 "iterations, files, tests_passed, tests_failed) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
                 row,
             )
-    except sqlite3.Error as exc:
+    except psycopg.Error as exc:
         logger.warning(f"could not write run history: {exc}")
 
 
@@ -80,29 +76,30 @@ def load_history() -> list[dict[str, Any]]:
 
     Returns:
         Up to the 50 most recent run records, or an empty list if the
-        database cannot be read.
+        database cannot be reached.
     """
     try:
-        with closing(_connect()) as connection:
-            rows = connection.execute(
-                "SELECT timestamp, task_id, task, status, iterations, "
+        with _connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT created_at, task_id, task, status, iterations, "
                 "files, tests_passed, tests_failed FROM runs "
-                "ORDER BY id DESC LIMIT ?",
+                "ORDER BY id DESC LIMIT %s",
                 (_MAX_ENTRIES,),
-            ).fetchall()
-    except sqlite3.Error as exc:
+            )
+            rows = cursor.fetchall()
+    except psycopg.Error as exc:
         logger.warning(f"could not read run history: {exc}")
         return []
     return [
         {
-            "timestamp": row["timestamp"],
-            "task_id": row["task_id"],
-            "task": row["task"],
-            "status": row["status"],
-            "iterations": row["iterations"],
-            "files": json.loads(row["files"]),
-            "tests_passed": row["tests_passed"],
-            "tests_failed": row["tests_failed"],
+            "timestamp": row[0],
+            "task_id": row[1],
+            "task": row[2],
+            "status": row[3],
+            "iterations": row[4],
+            "files": json.loads(row[5]),
+            "tests_passed": row[6],
+            "tests_failed": row[7],
         }
         for row in rows
     ]

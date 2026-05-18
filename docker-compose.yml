@@ -1,0 +1,20 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: codeteam-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-codeteam}
+      POSTGRES_USER: ${POSTGRES_USER:-codeteam}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-codeteam}
+    ports:
+      - "${POSTGRES_PORT:-5434}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-codeteam}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pgdata:

@@ -55,5 +55,8 @@ class Settings(BaseSettings):
     git_remote: str = ""
     git_token: str = ""
 
+    # --- Database (Postgres, run via docker-compose) ---
+    database_url: str = "postgresql://codeteam:codeteam@localhost:5434/codeteam"
+
 
 settings = Settings()
