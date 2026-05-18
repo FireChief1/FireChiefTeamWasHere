@@ -53,15 +53,35 @@ async def analyst_node(state: AgentState) -> dict[str, Any]:
 
 @node_error_boundary
 async def developer_node(state: AgentState) -> dict[str, Any]:
-    """Run the Developer to generate or revise the code."""
-    result = await DeveloperAgent(get_pool()).run(state)
+    """Run the Developer to generate or revise the code.
+
+    If the generated code is syntactically broken, the Developer is given one
+    more attempt before the code flows downstream to the Reviewer and QA.
+    """
+    agent = DeveloperAgent(get_pool())
+    result = await agent.run(state)
+    code = {f.filename: _strip_code_fences(f.content) for f in result.files}
+
+    if not _all_parseable(code):
+        logger.warning("Developer produced unparseable code; retrying once")
+        result = await agent.run(state)
+        code = {f.filename: _strip_code_fences(f.content) for f in result.files}
+
     return {
-        "code": {
-            f.filename: _strip_code_fences(f.content) for f in result.files
-        },
+        "code": code,
         "dev_approach": result.approach,
         "dev_assumptions": result.assumptions,
     }
+
+
+def _all_parseable(code: dict[str, str]) -> bool:
+    """Return True if every generated file parses as valid Python."""
+    for content in code.values():
+        try:
+            ast.parse(content)
+        except SyntaxError:
+            return False
+    return True
 
 
 @node_error_boundary
