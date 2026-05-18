@@ -19,11 +19,18 @@ class QAOutput(BaseModel):
 
     Attributes:
         test_filename: The test file name, e.g. test_bank_account.py.
+        test_cases: A plain-language description of each test case.
         test_code: The complete pytest test module.
         summary: A one-sentence summary of what the tests cover.
     """
 
     test_filename: str = Field(description="Test file name, e.g. test_x.py")
+    test_cases: list[str] = Field(
+        description=(
+            "One short plain-language sentence per test, describing what "
+            "that test verifies. One entry for each test in the test module."
+        )
+    )
     test_code: str = Field(description="The complete pytest test module.")
     summary: str = Field(description="One-sentence summary of test coverage.")
 
@@ -52,7 +59,9 @@ class QAAgent(BaseAgent[QAOutput]):
             "task as specified. Compute each expected value carefully and "
             "verify it -- a wrong expected value makes correct code fail. "
             "Name each test accurately for what it checks.\n\n"
-            "Return the test file name and its complete content. The test "
+            "Return the test file name, the complete test module, and "
+            "test_cases -- one short plain-language sentence per test "
+            "describing what it verifies (one entry per test). The test "
             "module must import the code under test by its module name (the "
             "file name without the .py extension)."
         )

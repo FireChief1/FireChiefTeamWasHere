@@ -73,6 +73,7 @@ class AgentState(TypedDict, total=False):
         review_feedback: Findings from the Reviewer.
         test_results: The outcome from the QA agent.
         test_code: The pytest test file the QA agent generated and ran.
+        test_cases: A plain-language description of each generated test.
         iteration: The current Developer-Reviewer loop iteration.
         issue_count_history: Issue count per iteration, for oscillation detection.
         best_code: The lowest-issue code version seen so far.
@@ -96,6 +97,7 @@ class AgentState(TypedDict, total=False):
     review_feedback: list[FeedbackItem]
     test_results: TestResults
     test_code: str
+    test_cases: list[str]
     iteration: int
     issue_count_history: list[int]
     best_code: dict[str, str]

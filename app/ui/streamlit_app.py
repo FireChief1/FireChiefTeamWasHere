@@ -120,9 +120,14 @@ def render_node_detail(node: str, update: dict[str, Any], iteration: int) -> Non
             if results is not None:
                 summary = f"{results.passed} test geçti, {results.failed} kaldı"
                 (st.success if results.failed == 0 else st.error)(summary)
+            test_cases = update.get("test_cases") or []
+            if test_cases:
+                st.markdown("**Test senaryoları:**")
+                for index, case in enumerate(test_cases, 1):
+                    st.markdown(f"{index}. {case}")
             test_code = update.get("test_code")
             if test_code:
-                st.markdown("**Yazılan test senaryoları:**")
+                st.markdown("**Test kodu:**")
                 st.code(test_code, language="python")
             if results is not None and results.output:
                 st.markdown("**pytest çıktısı:**")

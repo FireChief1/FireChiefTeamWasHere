@@ -113,6 +113,7 @@ async def qa_node(state: AgentState) -> dict[str, Any]:
         logger.warning(f"QA produced a syntactically invalid test: {exc}")
         return {
             "test_code": test_file,
+            "test_cases": result.test_cases,
             "test_results": TestResults(
                 passed=0,
                 failed=0,
@@ -131,6 +132,7 @@ async def qa_node(state: AgentState) -> dict[str, Any]:
     update: dict[str, Any] = {
         "test_results": test_results,
         "test_code": test_file,
+        "test_cases": result.test_cases,
     }
 
     if test_results.failed > 0:
