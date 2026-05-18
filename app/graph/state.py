@@ -62,6 +62,8 @@ class AgentState(TypedDict, total=False):
         task: The original task description from the user.
         task_id: A short unique identifier for this task run.
         mode: Whether the workflow generates new code or reviews existing code.
+        max_iterations: The Developer-Reviewer loop cap for this run.
+        use_rag: Whether to retrieve RAG context for this run.
         plan: The ordered implementation steps from the Analyst.
         code: The generated source files, keyed by filename.
         dev_approach: The Developer's explanation of how it approached the task.
@@ -82,6 +84,8 @@ class AgentState(TypedDict, total=False):
     task: str
     task_id: str
     mode: Literal["generate", "review"]
+    max_iterations: int
+    use_rag: bool
     plan: list[str]
     code: dict[str, str]
     dev_approach: str

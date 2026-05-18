@@ -33,6 +33,9 @@ async def rag_node(state: AgentState) -> dict[str, Any]:
     Runs first so every agent downstream sees the retrieved context. If the
     knowledge base is unavailable, the workflow continues without context.
     """
+    if state.get("use_rag") is False:
+        logger.info("RAG: disabled for this run")
+        return {"rag_context": [], "rag_sources": []}
     chunks = await asyncio.to_thread(retrieve, state["task"])
     logger.info(f"RAG: retrieved {len(chunks)} chunk(s)")
     return {

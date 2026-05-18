@@ -152,6 +152,8 @@ def render_result(box: Any, state: dict[str, Any]) -> None:
 
 async def run_workflow(
     task: str,
+    max_iterations: int,
+    use_rag: bool,
     status_box: Any,
     tracker_box: Any,
     detail_container: Any,
@@ -173,6 +175,8 @@ async def run_workflow(
         "mode": "generate",
         "iteration": 0,
         "status": "RUNNING",
+        "max_iterations": max_iterations,
+        "use_rag": use_rag,
     }
 
     statuses["rag"] = "active"
@@ -210,6 +214,15 @@ st.set_page_config(page_title="Multi-Agent Code Team", page_icon="🤖")
 st.title("🤖 Multi-Agent Code Team")
 st.caption("Yerel LLM'lerle çalışan çok-ajanlı kod geliştirme ekibi")
 
+with st.sidebar:
+    st.header("Ayarlar")
+    cfg_max_iterations = st.slider("Maksimum iterasyon", min_value=1, max_value=5, value=3)
+    cfg_use_rag = st.toggle("RAG (bilgi tabanı)", value=True)
+    st.caption(
+        "Maksimum iterasyon: Developer-Reviewer döngüsünün üst sınırı. "
+        "RAG kapalıyken ajanlar standart bağlamı olmadan çalışır."
+    )
+
 task_input = st.text_area("Görev", value=DEFAULT_TASK, height=110)
 go = st.button("▶ Çalıştır", type="primary")
 
@@ -225,6 +238,12 @@ if go:
         result_ph = st.container()
         asyncio.run(
             run_workflow(
-                task_input.strip(), status_ph, tracker_ph, detail_box, result_ph
+                task_input.strip(),
+                cfg_max_iterations,
+                cfg_use_rag,
+                status_ph,
+                tracker_ph,
+                detail_box,
+                result_ph,
             )
         )

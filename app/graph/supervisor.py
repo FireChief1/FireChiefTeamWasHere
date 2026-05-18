@@ -42,7 +42,8 @@ async def supervisor_node(state: AgentState) -> dict[str, Any]:
         logger.info("supervisor: code is clean -> SUCCESS")
         return update
 
-    at_max = (iteration + 1) >= settings.max_iterations
+    max_iterations = state.get("max_iterations") or settings.max_iterations
+    at_max = (iteration + 1) >= max_iterations
     no_progress = len(history) >= 2 and history[-1] >= history[-2]
 
     if at_max or no_progress:
