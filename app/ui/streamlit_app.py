@@ -120,8 +120,13 @@ def render_node_detail(node: str, update: dict[str, Any], iteration: int) -> Non
             if results is not None:
                 summary = f"{results.passed} test geçti, {results.failed} kaldı"
                 (st.success if results.failed == 0 else st.error)(summary)
-                if results.output:
-                    st.code(results.output, language="text")
+            test_code = update.get("test_code")
+            if test_code:
+                st.markdown("**Yazılan test senaryoları:**")
+                st.code(test_code, language="python")
+            if results is not None and results.output:
+                st.markdown("**pytest çıktısı:**")
+                st.code(results.output, language="text")
         elif node == "supervisor":
             st.markdown(f"**Karar:** {update.get('status')}")
             history = update.get("issue_count_history")
@@ -154,9 +159,13 @@ def render_result(box: Any, state: dict[str, Any]) -> None:
 def render_history() -> None:
     """Render the collapsible panel of past workflow runs."""
     history = load_history()
-    if not history:
-        return
     with st.expander(f"📋 Geçmiş Görevler ({len(history)})"):
+        if not history:
+            st.caption(
+                "Henüz çalıştırılmış görev yok. Bir görev çalıştırınca "
+                "burada listelenir."
+            )
+            return
         st.dataframe(
             [
                 {

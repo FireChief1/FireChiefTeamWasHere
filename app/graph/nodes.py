@@ -112,12 +112,13 @@ async def qa_node(state: AgentState) -> dict[str, Any]:
     except SyntaxError as exc:
         logger.warning(f"QA produced a syntactically invalid test: {exc}")
         return {
+            "test_code": test_file,
             "test_results": TestResults(
                 passed=0,
                 failed=0,
                 total=0,
                 output=f"QA test skipped -- syntax error: {exc}",
-            )
+            ),
         }
 
     async with workspace_tools() as tools:
@@ -127,7 +128,10 @@ async def qa_node(state: AgentState) -> dict[str, Any]:
         output = await tools.run_pytest(task_rel, timeout=settings.test_timeout)
 
     test_results = _parse_pytest(output)
-    update: dict[str, Any] = {"test_results": test_results}
+    update: dict[str, Any] = {
+        "test_results": test_results,
+        "test_code": test_file,
+    }
 
     if test_results.failed > 0:
         feedback = list(state.get("review_feedback") or [])

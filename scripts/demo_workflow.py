@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.graph.state import AgentState
 from app.graph.workflow import build_workflow
+from app.history import record_run
 from app.llm.pool import get_pool
 
 DEFAULT_TASK = (
@@ -42,6 +43,7 @@ async def main(task: str) -> None:
     print(f"task_id: {state['task_id']}\n")
 
     result = await workflow.ainvoke(state, config={"recursion_limit": 50})
+    record_run(dict(result))
 
     print("\n" + "=" * 60)
     print(f"STATUS: {result.get('status')}")
