@@ -23,6 +23,7 @@ import streamlit as st
 
 from app.graph.state import AgentState
 from app.graph.workflow import build_workflow
+from app.history import load_history, record_run
 from app.llm.pool import build_default_pool, set_pool
 
 DEFAULT_TASK = (
@@ -150,6 +151,31 @@ def render_result(box: Any, state: dict[str, Any]) -> None:
         box.code(content, language="python")
 
 
+def render_history() -> None:
+    """Render the collapsible panel of past workflow runs."""
+    history = load_history()
+    if not history:
+        return
+    with st.expander(f"📋 Geçmiş Görevler ({len(history)})"):
+        st.dataframe(
+            [
+                {
+                    "Zaman": entry.get("timestamp", "?"),
+                    "Görev": str(entry.get("task", ""))[:60],
+                    "Durum": entry.get("status", "?"),
+                    "Test": (
+                        f"{entry.get('tests_passed', 0)}/"
+                        f"{entry.get('tests_passed', 0) + entry.get('tests_failed', 0)}"
+                    ),
+                    "İterasyon": entry.get("iterations", 0),
+                }
+                for entry in history
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
 async def run_workflow(
     task: str,
     max_iterations: int,
@@ -208,11 +234,14 @@ async def run_workflow(
     await pool.aclose()
     status_box.empty()
     render_result(result_box, final_state)
+    record_run(final_state)
 
 
 st.set_page_config(page_title="Multi-Agent Code Team", page_icon="🤖")
 st.title("🤖 Multi-Agent Code Team")
 st.caption("Yerel LLM'lerle çalışan çok-ajanlı kod geliştirme ekibi")
+
+render_history()
 
 with st.sidebar:
     st.header("Ayarlar")
