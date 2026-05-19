@@ -1,9 +1,9 @@
 # Multi-Agent Code Development Team
 
-A pipeline-parallel multi-agent system that simulates a software development
-team using local, open-source LLMs. Specialized agents collaborate to turn a
-task description into reviewed, tested code — with no paid APIs and no data
-leaving the machine.
+A local multi-agent code development system that simulates a small software
+team using open-source LLMs. Specialized agents collaborate to turn a task
+description into reviewed, tested code — with no paid APIs and no data leaving
+the machine.
 
 Built as a final project for the Data Science / AI / LLM bootcamp.
 
@@ -35,8 +35,11 @@ All components are free and open-source (MIT / Apache 2.0).
 
 - **Core:** a single machine running `qwen2.5-coder:14b`. One model serves
   four agent personas.
-- **Optional scale-out:** add worker PCs as extra pool nodes for real
-  pipeline-parallel speedup. This is configuration, not a code change.
+- **Current workflow:** one task at a time through a sequential LangGraph state
+  machine: Analyst -> Developer -> Reviewer -> QA -> Supervisor -> Integrator.
+- **Optional future scale-out:** additional LLM nodes can be registered in the
+  pool factory; batch/pipeline execution is an extension point, not part of the
+  current UI workflow.
 
 ## Setup
 

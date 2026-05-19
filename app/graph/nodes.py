@@ -61,11 +61,26 @@ async def developer_node(state: AgentState) -> dict[str, Any]:
     agent = DeveloperAgent(get_pool())
     result = await agent.run(state)
     code = {f.filename: _strip_code_fences(f.content) for f in result.files}
+    validation_error = _validate_code_files(code)
 
-    if not _all_parseable(code):
-        logger.warning("Developer produced unparseable code; retrying once")
+    if validation_error:
+        logger.warning(
+            f"Developer produced invalid code; retrying once: {validation_error}"
+        )
         result = await agent.run(state)
         code = {f.filename: _strip_code_fences(f.content) for f in result.files}
+        validation_error = _validate_code_files(code)
+
+    if validation_error:
+        logger.error(f"Developer output rejected: {validation_error}")
+        return {
+            "code": code,
+            "dev_approach": result.approach,
+            "dev_assumptions": result.assumptions,
+            "node_error": f"developer_node: {validation_error}",
+            "should_abort": True,
+            "status": "FAILED",
+        }
 
     return {
         "code": code,
@@ -74,14 +89,23 @@ async def developer_node(state: AgentState) -> dict[str, Any]:
     }
 
 
-def _all_parseable(code: dict[str, str]) -> bool:
-    """Return True if every generated file parses as valid Python."""
-    for content in code.values():
+def _validate_code_files(code: dict[str, str]) -> str | None:
+    """Return a validation error for Developer output, or None if valid."""
+    if not code:
+        return "Developer produced no source files."
+    for filename, content in code.items():
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\.py", filename):
+            return (
+                f"Developer produced unsupported filename '{filename}'. "
+                "Use a simple Python module name such as bank_account.py."
+            )
+        if not content.strip():
+            return f"Developer produced an empty file: {filename}."
         try:
             ast.parse(content)
-        except SyntaxError:
-            return False
-    return True
+        except SyntaxError as exc:
+            return f"Developer produced invalid Python in {filename}: {exc}."
+    return None
 
 
 @node_error_boundary
@@ -111,15 +135,19 @@ async def qa_node(state: AgentState) -> dict[str, Any]:
         ast.parse(test_file)
     except SyntaxError as exc:
         logger.warning(f"QA produced a syntactically invalid test: {exc}")
+        output = f"QA test generation failed -- syntax error: {exc}"
         return {
             "test_code": test_file,
             "test_cases": result.test_cases,
             "test_results": TestResults(
                 passed=0,
-                failed=0,
-                total=0,
-                output=f"QA test skipped -- syntax error: {exc}",
+                failed=1,
+                total=1,
+                output=output,
             ),
+            "node_error": f"qa_node: {output}",
+            "should_abort": True,
+            "status": "FAILED",
         }
 
     async with workspace_tools() as tools:
@@ -160,12 +188,30 @@ def _parse_pytest(output: str) -> TestResults:
     """Parse raw pytest output into a TestResults summary."""
     if output.startswith("TIMEOUT:"):
         return TestResults(passed=0, failed=1, total=1, output=output)
+    if "no tests ran" in output or "collected 0 items" in output:
+        return TestResults(
+            passed=0,
+            failed=1,
+            total=1,
+            output=(output or "No tests were collected or executed.")[-2000:],
+        )
     passed = _count(r"(\d+) passed", output)
     failed = _count(r"(\d+) failed", output) + _count(r"(\d+) error", output)
+    total = passed + failed
+    if total == 0:
+        return TestResults(
+            passed=0,
+            failed=1,
+            total=1,
+            output=(
+                output
+                or "Pytest completed without any passing or failing tests."
+            )[-2000:],
+        )
     return TestResults(
         passed=passed,
         failed=failed,
-        total=passed + failed,
+        total=total,
         output=output[-2000:],
     )
 

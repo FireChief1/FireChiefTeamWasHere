@@ -14,6 +14,8 @@ Each edge case lists the scenario, its impact, the resolution built into the arc
 
 - **HANDLED** — the base architecture already covers this.
 - **HARDENED** — a specific mechanism was added to the architecture to cover this.
+- **PARTIAL** — the current implementation handles the core failure mode, but not every originally proposed enhancement.
+- **PLANNED** — documented as a future extension; not implemented in the current repository.
 
 ---
 
@@ -25,9 +27,9 @@ Each edge case lists the scenario, its impact, the resolution built into the arc
 
 **Impact:** IMPORTANT — one capability (CODER or REASONER) has no primary node.
 
-**Resolution (HANDLED):** The `LLMPool` runs a health check before the workflow begins. An unreachable node is marked unhealthy. Requests for its capability fall back to the Mac fallback node (`qwen2.5:3b`).
+**Resolution (PARTIAL):** The `LLMPool` supports health checks and fallback routing. In the current Streamlit workflow, warm-up marks unreachable nodes unhealthy before the task starts; a long-running background health loop exists but is not started by the UI.
 
-**Implemented in:** `llm/pool.py` — `health_check_loop`, `pick_node`.
+**Implemented in:** `llm/pool.py` — `warm_up`, `health_check_once`, `run_health_loop`, `pick_node`.
 
 ### EC-02: A worker PC crashes mid-task
 
@@ -35,9 +37,9 @@ Each edge case lists the scenario, its impact, the resolution built into the arc
 
 **Impact:** IMPORTANT — an in-flight request fails.
 
-**Resolution (HANDLED):** Retry with exponential backoff (`tenacity`). After 3 consecutive failures the node's circuit breaker opens and routing skips it. The request is retried against another healthy node or the fallback.
+**Resolution (HANDLED):** Calls retry with exponential backoff implemented in the pool. After the configured number of consecutive failures, the node's circuit opens and routing skips it. The request is retried against another usable node or fallback if one is configured.
 
-**Implemented in:** `llm/pool.py` — `generate` with retry decorator, circuit breaker state per node.
+**Implemented in:** `llm/pool.py` — `_execute`, circuit breaker state per node.
 
 ### EC-03: Both worker PCs are down (DEGRADED MODE)
 
@@ -45,7 +47,7 @@ Each edge case lists the scenario, its impact, the resolution built into the arc
 
 **Impact:** CRITICAL — the whole CODER/REASONER topology is gone.
 
-**Resolution (HARDENED):** The system enters **DEGRADED MODE** instead of failing. All capabilities route to the Mac fallback node (`qwen2.5:3b`). Quality drops because a 3B model is weaker, but the demo continues. The UI shows a persistent yellow banner: "Worker PCs unreachable — running in fallback mode." DEGRADED MODE is logged and surfaced in the final result metadata.
+**Resolution (PARTIAL):** The pool enters degraded mode when a specialized capability has no usable node. If a fallback node is configured and healthy, requests can route there; if the only node is down, the workflow fails honestly. The UI surfaces degraded mode in the run state and final result.
 
 **Implemented in:** `llm/pool.py` — `pick_node` returns fallback for any capability when no specialized node is healthy; `is_degraded()` flag; UI banner in `ui/streamlit_app.py`.
 
@@ -79,9 +81,9 @@ Each edge case lists the scenario, its impact, the resolution built into the arc
 
 **Impact:** CRITICAL — the Developer has no instructions to act on.
 
-**Resolution (HARDENED):** The Analyst node validates its own output. If the plan is empty or has zero usable steps, it retries the LLM call once with a stricter prompt. If the retry also fails, the node degrades gracefully: it sets a single-step plan that instructs the Developer to work directly from the original task description. The workflow never stalls on a bad plan.
+**Resolution (PARTIAL):** The Analyst uses structured output, so malformed responses fail at the LLM call boundary and are caught by the node error boundary. Empty-plan graceful fallback is not currently implemented.
 
-**Implemented in:** `agents/analyst.py` — internal validation and one-shot retry; graceful fallback plan.
+**Implemented in:** `agents/analyst.py`, `agents/base.py`, `graph/error_boundary.py`.
 
 ### EC-08: Developer output cannot be parsed
 
@@ -89,14 +91,9 @@ Each edge case lists the scenario, its impact, the resolution built into the arc
 
 **Impact:** CRITICAL — there is no code to review or test.
 
-**Resolution (HARDENED):** Three-layer recovery:
-1. LangChain `with_structured_output()` constrains the response to a Pydantic schema.
-2. On a parse failure, the call is retried once with an explicit "return only valid code" instruction.
-3. As a last resort, a regular expression extracts fenced code blocks from the raw text.
+**Resolution (HARDENED):** LangChain `with_structured_output()` constrains the response to a Pydantic schema. The Developer node then validates that at least one simple Python module was produced, each file is non-empty, and every file parses as Python. Invalid output is retried once; if the retry is still invalid, the workflow ends as FAILED with `node_error`.
 
-If all three fail, the Developer node sets `node_error` and the workflow routes to a FAILED end state with an honest report.
-
-**Implemented in:** `agents/developer.py` — structured output, retry, regex fallback.
+**Implemented in:** `agents/developer.py`, `graph/nodes.py` — structured output, file validation, one retry, honest failure.
 
 ### EC-09: Developer writes code unrelated to the task
 
@@ -114,14 +111,9 @@ If all three fail, the Developer node sets `node_error` and the workflow routes 
 
 **Impact:** CRITICAL — the Supervisor cannot make a routing decision.
 
-**Resolution (HARDENED):** Three-layer recovery:
-1. `with_structured_output()` constrains the Reviewer to a Pydantic feedback schema.
-2. On a parse failure, retry once asking explicitly for valid JSON.
-3. If still unparseable, the system fails safe: it synthesizes a single feedback item — `severity: BLOCKER, issue: "review output could not be parsed"` — which forces a loop iteration rather than wrongly approving the code.
+**Resolution (HARDENED):** `with_structured_output()` constrains the Reviewer to a Pydantic feedback schema. If structured output fails after pool retries, the node error boundary fails the workflow rather than approving code with an unreadable review.
 
-Failing safe means an unparseable review never results in code being approved.
-
-**Implemented in:** `agents/reviewer.py` — structured output, retry, safe-fallback feedback.
+**Implemented in:** `agents/reviewer.py`, `agents/base.py`, `llm/pool.py`, `graph/error_boundary.py`.
 
 ### EC-11: Generated code contains an infinite loop and hangs pytest
 
@@ -139,9 +131,9 @@ Failing safe means an unparseable review never results in code being approved.
 
 **Impact:** IMPORTANT — tests cannot run.
 
-**Resolution (HANDLED):** `pytest` reports a collection error. The QA agent captures it as a failing result and reports it as feedback. The review loop sends it back to the Developer.
+**Resolution (HARDENED):** Developer output is parsed before review and QA. Syntax errors trigger one Developer retry and then a FAILED workflow if the retry is still invalid. If pytest reports a collection error, QA parses that as a failing result and feeds it into review feedback.
 
-**Implemented in:** `agents/qa.py`.
+**Implemented in:** `graph/nodes.py`.
 
 ### EC-13: A node raises an unhandled Python exception
 
@@ -207,9 +199,9 @@ Failing safe means an unparseable review never results in code being approved.
 
 **Impact:** CRITICAL — by default the first failure cancels the entire batch.
 
-**Resolution (HARDENED):** The pipeline invokes `abatch` with `return_exceptions=True`. Each task is isolated: a failure in one task is captured as a result for that task only, and the other tasks complete normally. The UI shows per-task status.
+**Resolution (PLANNED):** A future batch runner should invoke the compiled workflow with `abatch(..., return_exceptions=True)`. The current UI runs one task at a time, so this failure mode is outside the implemented surface.
 
-**Implemented in:** `graph/pipeline.py` — `abatch(..., return_exceptions=True)`.
+**Implemented in:** Not implemented yet; planned extension point.
 
 ### EC-19: Workspace collision between parallel tasks
 
@@ -217,9 +209,9 @@ Failing safe means an unparseable review never results in code being approved.
 
 **Impact:** CRITICAL — tasks overwrite each other's output.
 
-**Resolution (HANDLED):** Each task gets an isolated directory, `workspace/task-{id}/`, and an isolated git branch, `feat/task-{id}`.
+**Resolution (HANDLED):** Each task gets an isolated directory, `workspace/task-{id}/`, and an isolated local git branch, `feat/task-{id}`, inside that generated task repository.
 
-**Implemented in:** `graph/pipeline.py`, MCP filesystem server scoping.
+**Implemented in:** `graph/nodes.py`, `graph/integrator.py`, MCP filesystem server scoping.
 
 ### EC-20: Shared-state corruption between parallel tasks
 
@@ -227,7 +219,7 @@ Failing safe means an unparseable review never results in code being approved.
 
 **Impact:** CRITICAL.
 
-**Resolution (HANDLED):** LangGraph state is immutable and per-invocation. Each task carries its own state object. Agents are stateless functions. The only shared component, `LLMPool`, is read-mostly and guards its mutable fields with an `asyncio.Lock`.
+**Resolution (HANDLED):** LangGraph state is per-invocation. Each task carries its own state object, and agents are stateless wrappers around prompts and schemas. `LLMPool` has small mutable health/failure counters; current UI execution is single-task, and future parallel batch execution should revisit synchronization if multiple workflows share one pool.
 
 **Implemented in:** `graph/state.py`, `llm/pool.py`.
 
@@ -251,9 +243,9 @@ Failing safe means an unparseable review never results in code being approved.
 
 **Impact:** CRITICAL — security.
 
-**Resolution (HANDLED):** The MCP shell server enforces a command allow-list (`pytest`, `ruff`, `mypy`). Everything else is rejected.
+**Resolution (HANDLED):** The workspace MCP server exposes only a bounded `run_pytest` tool for command execution. It does not accept arbitrary shell commands from agents.
 
-**Implemented in:** MCP shell server configuration.
+**Implemented in:** `mcp_servers/workspace_server.py`.
 
 ### EC-23: MCP server crashes mid-task
 
@@ -261,9 +253,9 @@ Failing safe means an unparseable review never results in code being approved.
 
 **Impact:** IMPORTANT — tool calls fail.
 
-**Resolution (HARDENED):** MCP tool calls are wrapped in try/except. A tool failure is converted into a structured error returned to the agent ("file write failed"), which the agent surfaces as feedback. The node error boundary (EC-13) catches anything unhandled. The MCP client attempts one reconnect before giving up.
+**Resolution (PARTIAL):** MCP tool failures propagate to the node layer and are caught by the node error boundary, producing a FAILED workflow with `node_error`. The current MCP client does not implement reconnect.
 
-**Implemented in:** `tools/mcp_client.py` — error wrapping and single reconnect.
+**Implemented in:** `tools/mcp_client.py`, `graph/error_boundary.py`.
 
 ### EC-24: Disk full or file write fails
 
@@ -271,9 +263,9 @@ Failing safe means an unparseable review never results in code being approved.
 
 **Impact:** IMPORTANT.
 
-**Resolution (HARDENED):** File-write tool calls catch `OSError`. The failure is reported to the Developer agent as an error result and ultimately, if unrecoverable, ends the task with a FAILED status and a clear message rather than a crash.
+**Resolution (HANDLED):** File-write failures propagate out of the MCP tool call and are caught by the node error boundary. The workflow ends with FAILED status and a clear `node_error` rather than crashing the process.
 
-**Implemented in:** `tools/mcp_client.py`, node error boundary.
+**Implemented in:** `mcp_servers/workspace_server.py`, `tools/mcp_client.py`, `graph/error_boundary.py`.
 
 ### EC-25: Git not initialized or branch already exists
 
@@ -281,9 +273,9 @@ Failing safe means an unparseable review never results in code being approved.
 
 **Impact:** IMPORTANT — the commit step fails.
 
-**Resolution (HARDENED):** The Integrator checks for a git repository and runs `git init` if needed. If the target branch already exists, it appends a numeric suffix (`feat/task-1-2`). All git operations are checked; a git failure ends the task with COMPLETED_WITH_WARNINGS (the code is still valid, only the commit step failed) rather than crashing.
+**Resolution (PARTIAL):** The Integrator asks the workspace MCP server to initialize a git repository if needed, check out the target feature branch, add a generated `.gitignore`, and commit. Branch suffixing and detailed git failure propagation are not currently implemented; a failed commit returns a "commit skipped" message.
 
-**Implemented in:** `graph/integrator.py`.
+**Implemented in:** `graph/integrator.py`, `mcp_servers/workspace_server.py`.
 
 ---
 
@@ -295,11 +287,9 @@ Failing safe means an unparseable review never results in code being approved.
 
 **Impact:** CRITICAL — agents may crash when retrieval returns nothing, or silently lose all standards context.
 
-**Resolution (HARDENED):** Two parts:
-1. A startup check verifies the collection is non-empty; if empty, the UI shows a warning: "RAG knowledge base is empty — run ingestion."
-2. The retriever degrades gracefully: if retrieval returns no chunks, agents proceed with an empty context string instead of crashing. A log entry records "generation without RAG context."
+**Resolution (HANDLED):** The retriever degrades gracefully: if the collection is empty or unavailable, retrieval returns an empty list and agents proceed with no RAG context. The UI shows "RAG context unavailable" in the node detail when no chunks are returned. There is no blocking startup check.
 
-**Implemented in:** `rag/retriever.py` — empty-result handling; startup check in `ui/streamlit_app.py`.
+**Implemented in:** `rag/retriever.py`, `graph/nodes.py`, `ui/streamlit_app.py`.
 
 ### EC-27: Embedding model unavailable
 
@@ -307,9 +297,9 @@ Failing safe means an unparseable review never results in code being approved.
 
 **Impact:** IMPORTANT — RAG cannot function.
 
-**Resolution (HARDENED):** Startup check confirms the embedding model is available via Ollama. If missing, the UI shows actionable instructions (`ollama pull nomic-embed-text`). The system still runs without RAG (graceful degradation per EC-26).
+**Resolution (HANDLED):** Embedding failures are caught inside retrieval and converted to empty RAG context. The system still runs without RAG. There is no separate startup model check in the current UI.
 
-**Implemented in:** Startup check in `ui/streamlit_app.py`.
+**Implemented in:** `rag/retriever.py`.
 
 ### EC-28: Empty or malformed user input
 
@@ -327,9 +317,9 @@ Failing safe means an unparseable review never results in code being approved.
 
 **Impact:** MINOR — acceptable for a single-user demo system.
 
-**Resolution (HANDLED):** The workflow continues to completion server-side. Streamlit session state holds the result; on reconnect within the session, the result is still available. No special handling beyond standard Streamlit behavior is required for the demo scope.
+**Resolution (PLANNED):** The current single-user demo does not add explicit disconnect recovery beyond standard Streamlit behavior. A production version should persist in-flight run state and allow reconnect/resume.
 
-**Implemented in:** Standard Streamlit session behavior.
+**Implemented in:** Not implemented beyond standard Streamlit behavior.
 
 ---
 
@@ -337,15 +327,15 @@ Failing safe means an unparseable review never results in code being approved.
 
 | ID | Severity | Status | Key Mechanism |
 |----|----------|--------|---------------|
-| EC-01 | IMPORTANT | HANDLED | Health check + fallback routing |
+| EC-01 | IMPORTANT | PARTIAL | Warm-up health marking + fallback routing support |
 | EC-02 | IMPORTANT | HANDLED | Retry + circuit breaker |
-| EC-03 | CRITICAL | HARDENED | Degraded mode + UI banner |
+| EC-03 | CRITICAL | PARTIAL | Degraded state + UI banner when fallback is possible/configured |
 | EC-04 | IMPORTANT | HARDENED | Warm-up phase |
 | EC-05 | CRITICAL | HANDLED | NUM_PARALLEL=1, model sizing |
-| EC-07 | CRITICAL | HARDENED | Plan validation + graceful fallback |
-| EC-08 | CRITICAL | HARDENED | Structured output + retry + regex |
+| EC-07 | CRITICAL | PARTIAL | Structured output + error boundary |
+| EC-08 | CRITICAL | HARDENED | Structured output + file validation + retry |
 | EC-09 | IMPORTANT | HANDLED | Review loop |
-| EC-10 | CRITICAL | HARDENED | Structured output + retry + fail-safe BLOCKER |
+| EC-10 | CRITICAL | HARDENED | Structured output + retry + fail-closed error boundary |
 | EC-11 | CRITICAL | HARDENED | Subprocess timeout on test execution |
 | EC-12 | IMPORTANT | HANDLED | pytest error capture |
 | EC-13 | CRITICAL | HARDENED | Node error boundary decorator |
@@ -353,17 +343,19 @@ Failing safe means an unparseable review never results in code being approved.
 | EC-15 | IMPORTANT | HANDLED | Loop circuit breaker |
 | EC-16 | IMPORTANT | HARDENED | State-trimming rule |
 | EC-17 | MINOR | HANDLED | Deterministic decision tree |
-| EC-18 | CRITICAL | HARDENED | abatch return_exceptions=True |
+| EC-18 | CRITICAL | PLANNED | Future abatch runner with return_exceptions=True |
 | EC-19 | CRITICAL | HANDLED | Per-task workspace + branch |
 | EC-20 | CRITICAL | HANDLED | Immutable per-task state |
 | EC-21 | CRITICAL | HANDLED | Workspace path validation |
-| EC-22 | CRITICAL | HANDLED | Shell command allow-list |
-| EC-23 | IMPORTANT | HARDENED | MCP error wrapping + reconnect |
-| EC-24 | IMPORTANT | HARDENED | OSError handling |
-| EC-25 | IMPORTANT | HARDENED | Git init check + branch suffix |
-| EC-26 | CRITICAL | HARDENED | RAG graceful degradation + startup check |
-| EC-27 | IMPORTANT | HARDENED | Embedding model startup check |
+| EC-22 | CRITICAL | HANDLED | Only bounded pytest tool exposed |
+| EC-23 | IMPORTANT | PARTIAL | MCP failures caught by node boundary |
+| EC-24 | IMPORTANT | HANDLED | File-write failures become node errors |
+| EC-25 | IMPORTANT | PARTIAL | Git init + commit; branch suffixing not implemented |
+| EC-26 | CRITICAL | HANDLED | RAG graceful degradation |
+| EC-27 | IMPORTANT | HANDLED | Embedding failures degrade to empty RAG |
 | EC-28 | IMPORTANT | HARDENED | UI input validation |
-| EC-29 | MINOR | HANDLED | Standard Streamlit session |
+| EC-29 | MINOR | PLANNED | Explicit reconnect/resume support |
 
-**Totals:** 28 edge cases — 13 HANDLED by the base architecture, 15 HARDENED with specific mechanisms added.
+Statuses reflect the current repository implementation. Planned items are
+kept in the register so they remain visible as future work rather than being
+presented as already complete.

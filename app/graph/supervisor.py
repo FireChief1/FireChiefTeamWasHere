@@ -55,7 +55,11 @@ async def supervisor_node(state: AgentState) -> dict[str, Any]:
 
     if at_max or no_progress:
         update["status"] = "FAILED" if has_blocker else "COMPLETED_WITH_WARNINGS"
-        update["code"] = update.get("best_code") or dict(state.get("code") or {})
+        update["code"] = (
+            update.get("best_code")
+            or dict(state.get("best_code") or {})
+            or dict(state.get("code") or {})
+        )
         reason = "max iterations reached" if at_max else "no progress"
         logger.info(f"supervisor: stopping ({reason}) -> {update['status']}")
         return update

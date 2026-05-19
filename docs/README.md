@@ -1,6 +1,6 @@
 # Engineering Standards & Knowledge Base
 
-This directory contains the documentation that powers the RAG (Retrieval-Augmented Generation) layer of the multi-agent code development system. Each agent retrieves relevant chunks from these documents to inform its behavior.
+This directory contains the documentation that powers the RAG (Retrieval-Augmented Generation) layer of the multi-agent code development system. The workflow retrieves relevant chunks for the task and passes that context to downstream agents.
 
 ## Document Structure
 
@@ -51,7 +51,7 @@ All documents follow these conventions for optimal vector retrieval:
 ## Ingestion
 
 ```bash
-python -m rag.ingest --path ./docs --chunk-size 500 --overlap 50
+python -m app.rag.ingest
 ```
 
 This loads all markdown files into ChromaDB with `nomic-embed-text` embeddings.

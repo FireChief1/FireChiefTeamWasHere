@@ -21,6 +21,13 @@ from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("workspace")
 
+_GENERATED_REPO_IGNORES = (
+    "__pycache__/",
+    "*.py[cod]",
+    ".coverage",
+    ".pytest_cache/",
+)
+
 
 def _workspace_root() -> Path:
     """Return the workspace root from the environment.
@@ -113,6 +120,20 @@ def run_pytest(rel_dir: str, timeout: int = 30) -> str:
     return proc.stdout + proc.stderr
 
 
+def _ensure_gitignore(target: Path) -> None:
+    """Ensure generated task repositories do not commit test artefacts."""
+    gitignore = target / ".gitignore"
+    existing = gitignore.read_text().splitlines() if gitignore.exists() else []
+    missing = [entry for entry in _GENERATED_REPO_IGNORES if entry not in existing]
+    if not missing:
+        return
+
+    prefix = "\n" if existing else ""
+    gitignore.write_text(
+        "\n".join(existing) + prefix + "\n".join(missing) + "\n"
+    )
+
+
 @mcp.tool()
 def git_commit(rel_dir: str, message: str, branch: str) -> str:
     """Initialize a git repo if needed and commit a workspace directory.
@@ -126,6 +147,7 @@ def git_commit(rel_dir: str, message: str, branch: str) -> str:
         A status message describing the commit result.
     """
     target = _safe_path(rel_dir)
+    _ensure_gitignore(target)
 
     def git(*args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(

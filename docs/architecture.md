@@ -6,14 +6,14 @@ The system simulates a software development team using local LLMs. Specialized a
 
 ## Design Goals
 
-1. **Distributed** — run LLM inference across heterogeneous local hardware.
+1. **Local-first** — run LLM inference on local hardware.
 2. **Resilient** — degrade gracefully; never crash silently.
-3. **Pipelined** — process multiple tasks with overlapping stages for throughput.
+3. **Extensible** — keep the LLM pool and workflow boundaries ready for future batch or scale-out execution.
 4. **Zero-cost** — fully local, open-source, no paid APIs.
 
 ## Physical Topology
 
-Deployment topology is configuration, not architecture. The system runs on one, two, or three machines without code changes, because the LLM pool routes by capability rather than by machine.
+The current implementation is a single-machine core. The LLM pool routes by capability rather than by agent name, so additional nodes can be added in the pool factory as a focused extension.
 
 ### Core Deployment (single machine)
 
@@ -41,7 +41,7 @@ An agent is defined by its system prompt (persona), its tools, the slice of stat
 
 ### Optional Scale-Out (bonus)
 
-If the core works and time permits, two Ubuntu PCs (RTX 3050 6 GB each) can be added to the pool as extra nodes. This is a configuration change — the `LLMPool` code does not change — and it makes pipeline parallelism yield a real speedup.
+If the core works and time permits, worker machines can be added to the pool as extra nodes. The current repository does not ship a multi-machine configuration UI; adding workers means extending `build_default_pool()` or adding configuration-driven node loading.
 
 ```
         LAN (Gigabit)
@@ -53,7 +53,7 @@ If the core works and time permits, two Ubuntu PCs (RTX 3050 6 GB each) can be a
             coder:7b   instruct
 ```
 
-All LLMs are from the Qwen2.5 family (Apache 2.0). In the single-machine core, pipeline parallelism provides task concurrency but no speedup, because one model serializes inference; the speedup applies only in the scale-out deployment.
+All intended LLMs are from the Qwen2.5 family (Apache 2.0). In the single-machine core, one model serializes inference for all agent personas.
 
 ## Software Layers
 
@@ -62,12 +62,12 @@ The orchestrator software is organized in five layers. Each layer calls only the
 ```
 ┌────────────────────────────────────────────────────┐
 │ PRESENTATION   Streamlit UI                         │
-│                chat, pipeline grid, agent activity, │
-│                GPU dashboard, push button           │
+│                task input, live agent activity,     │
+│                run history, final result            │
 ├────────────────────────────────────────────────────┤
 │ ORCHESTRATION  LangGraph workflow                   │
 │                StateGraph, nodes, conditional edges,│
-│                abatch pipeline, error boundary      │
+│                error boundary                       │
 ├────────────────────────────────────────────────────┤
 │ AGENTS         Analyst, Developer, Reviewer, QA     │
 │                + Supervisor, Integrator (nodes)     │
@@ -103,51 +103,45 @@ The Supervisor and Integrator are deterministic — they make no LLM judgment ca
                     └──────┬──────┘
                            ▼
                   ┌──────────────────┐
-                  │   WARM-UP        │  EC-04: load models into VRAM
-                  │   health check   │  EC-26/27: verify RAG + embeddings
+                  │   RAG            │  retrieves coding standards;
+                  │                  │  empty retrieval is allowed
                   └────────┬─────────┘
                            ▼
                   ┌──────────────────┐
-                  │   ANALYST        │  EC-07: validates own plan,
-                  │   (REASONER)     │  retries once, degrades gracefully
+                  │   ANALYST        │  creates a short plan
+                  │   (REASONER)     │
                   └────────┬─────────┘
                            ▼
                   ┌──────────────────┐
-                  │   DEVELOPER      │  EC-08: structured output + retry
-                  │   (CODER)        │  + regex fallback
-                  │   RAG + MCP write│  EC-26: proceeds if RAG empty
+                  │   DEVELOPER      │  structured code output;
+                  │   (CODER)        │  validates filenames and Python syntax
                   └────────┬─────────┘
                            ▼
-                ╔══════════════════════╗
-                ║  PARALLEL (Send())   ║
-                ╠══════════╦═══════════╣
-                ▼          ▼
-        ┌───────────┐ ┌───────────┐
-        │ REVIEWER  │ │    QA     │  EC-11: pytest under
-        │ (CODER)   │ │(REASONER) │  subprocess timeout
-        │ EC-10:    │ │           │
-        │ fail-safe │ │           │
-        │ JSON      │ │           │
-        └─────┬─────┘ └─────┬─────┘
-              └──────┬──────┘
-                     ▼
-            ┌──────────────────┐
-            │   SUPERVISOR     │  deterministic decision tree
-            │   (deterministic)│  EC-14: max 3 iterations
-            └────────┬─────────┘  EC-15: oscillation breaker
-                     │
-        ┌────────────┼────────────┬──────────────┐
-        ▼            ▼            ▼              ▼
-   ┌─────────┐ ┌──────────┐ ┌──────────┐  ┌───────────┐
-   │ loop →  │ │ SUCCESS  │ │ WARNINGS │  │  FAILED   │
-   │Developer│ │    ↓     │ │    ↓     │  │  (best    │
-   └─────────┘ │INTEGRATOR│ │   END    │  │  version) │
-               └────┬─────┘ └──────────┘  └───────────┘
-                    ▼
-              ┌──────────┐
-              │   END    │  EC-25: git init check,
-              │ + commit │  branch suffix on conflict
-              └──────────┘
+                  ┌──────────────────┐
+                  │   REVIEWER       │  structured review findings
+                  │   (CODER)        │
+                  └────────┬─────────┘
+                           ▼
+                  ┌──────────────────┐
+                  │   QA             │  writes tests and runs pytest
+                  │   (REASONER)     │  through MCP with timeout
+                  └────────┬─────────┘
+                           ▼
+                  ┌──────────────────┐
+                  │   SUPERVISOR     │  deterministic decision tree
+                  │                  │  max iterations + no-progress stop
+                  └────────┬─────────┘
+                           │
+          ┌────────────────┼────────────────┐
+          ▼                ▼                ▼
+   loop to Developer   SUCCESS/WARNINGS    FAILED
+                            │
+                            ▼
+                      ┌──────────┐
+                      │INTEGRATOR│  writes final code and local commit
+                      └────┬─────┘
+                           ▼
+                          END
 
 CROSS-CUTTING — EC-13 ERROR BOUNDARY:
 Every node is wrapped by @node_error_boundary. Any unhandled
@@ -166,19 +160,19 @@ Every node function is wrapped by the `@node_error_boundary` decorator. It catch
 
 ### Capability Routing with Degraded Mode
 
-`LLMPool` routes by capability (CODER, REASONER, FALLBACK), not by round-robin. Each node has a health state and a circuit breaker. When no specialized node is healthy for a capability, the pool routes to the Mac fallback and the system enters DEGRADED MODE — lower quality but still running, with a visible UI banner. (EC-01, EC-02, EC-03)
+`LLMPool` routes by capability (CODER, REASONER, FALLBACK), not by round-robin. Each node has a health state and a circuit breaker. If a configured specialized node is unavailable and a fallback node is usable, requests route to fallback. The Streamlit UI records and displays degraded mode when the current pool cannot serve every specialized capability. (EC-01, EC-02, EC-03)
 
 ### Warm-Up Phase
 
-Before the workflow starts, a warm-up step sends a trivial prompt to each node so models are resident in VRAM, and verifies that ChromaDB and the embedding model are available. This eliminates cold-start timeouts and surfaces missing-dependency problems immediately. (EC-04, EC-26, EC-27)
+Before the workflow starts, a warm-up step sends a trivial prompt to each configured LLM node so models are resident in memory when possible. RAG and embedding failures are handled by the retriever's graceful-degradation path rather than by a blocking startup check. (EC-04, EC-26, EC-27)
 
 ### Structured Output with Fail-Safe Fallback
 
-Agents that must return structured data (Developer code, Reviewer feedback) use `with_structured_output()`, retry once on a parse failure, and then fall back: the Developer extracts code via regex; the Reviewer synthesizes a BLOCKER feedback item so unparseable reviews never approve code. Failing safe always favors another loop iteration over a wrong approval. (EC-08, EC-10)
+Agents that must return structured data use `with_structured_output()`. The Developer node validates the returned files, retries once if the output is empty, unsupported, or syntactically invalid, and then fails honestly if the second attempt is still unusable. Reviewer structured-output failures are caught by the node error boundary, producing a FAILED workflow rather than an accidental approval. (EC-08, EC-10)
 
 ### Bounded Test Execution
 
-The QA agent runs all generated tests under a hard subprocess timeout. A hanging test (for example, an infinite loop in generated code) is killed and reported as a failing test, which feeds the review loop instead of freezing the system. (EC-11)
+The QA node runs generated tests under a hard subprocess timeout. A hanging test is killed and reported as a failing test. A syntactically invalid test file, a run with no collected tests, or a skipped-only run is treated as a failure so the workflow never reports success without real test execution. (EC-11)
 
 ### Bounded Review Loop
 
@@ -194,7 +188,7 @@ If the RAG knowledge base is empty or retrieval returns nothing, agents proceed 
 
 ## Data Flow: The State Object
 
-A single `AgentState` object flows through the workflow, growing as each node contributes. The state is immutable per invocation — each node returns a new state — which guarantees task isolation in the parallel pipeline.
+A single `AgentState` object flows through the workflow, growing as each node contributes. The state is immutable per invocation — each node returns a state update rather than mutating a shared transcript.
 
 ```
 AgentState fields:
@@ -241,53 +235,49 @@ Agent: pool.generate(prompt, capability=CODER)
         │ circuit breaker    │
         └────────────────────┘
 
-Background: health_check_loop every 15s probes all nodes,
-updates health state, auto-recovers nodes that come back.
+The pool exposes a health-check loop for long-running deployments. The current
+Streamlit path performs warm-up before each run and surfaces degraded state in
+the UI.
 ```
 
-## Pipeline Parallelism
+## Current Execution Model and Future Pipeline
 
-Multiple tasks are submitted together via LangGraph's `abatch`, invoked with `return_exceptions=True` so one task's failure never aborts the batch. Because agents for different stages run on different machines, tasks at different stages execute truly in parallel.
+The current UI runs one task at a time through the sequential graph:
 
 ```
-        t1        t2        t3        t4
-Task1: [Analyst][Develop][Rev+QA ][Super]
-Task2:          [Analyst][Develop][Rev+QA]
-Task3:                   [Analyst][Develop]
-
-At t2: PC2 runs Task1.Developer's reasoning peers while
-PC1 runs Task1.Developer — both GPUs busy.
+RAG -> Analyst -> Developer -> Reviewer -> QA -> Supervisor -> Integrator
 ```
 
-Each task uses an isolated workspace (`workspace/task-{id}/`) and an isolated git branch (`feat/task-{id}`), so parallel tasks never collide. (EC-18, EC-19, EC-20)
+Generated task output is isolated under `workspace/task-{id}/`; successful or warning-completed tasks are committed in that directory on `feat/task-{id}`. A future batch runner can use LangGraph `abatch(..., return_exceptions=True)` over the same compiled workflow, but `app/graph/pipeline.py` and a multi-task UI are not part of the current implementation.
 
 ## Git and Remote Push
 
-Agents perform local git operations (add, commit, branch, diff) through the MCP git tool. No agent pushes to a remote on its own.
+Agents do not push to a remote. The deterministic Integrator writes final code through the workspace MCP server and asks that server to create a local git commit.
 
-After a SUCCESS result, the deterministic Integrator node creates a feature branch and a local commit (the commit message is LLM-generated in Conventional Commits style). Pushing to the remote is a separate, human-gated action: the UI presents a push button, and the user approves it. Pushes go only to feature branches, never to main. FAILED tasks never reach the Integrator.
+After a SUCCESS or COMPLETED_WITH_WARNINGS result, the Integrator creates `workspace/task-{id}/`, initializes a git repository there if needed, checks out `feat/task-{id}`, writes a `.gitignore` for generated test artefacts, and commits the generated code and tests with a deterministic `feat:` subject derived from the task. FAILED tasks never reach the Integrator.
 
 ## Tool Execution Model
 
-Agents do not use native LLM tool-calling. A Day-2 reliability spike showed
-that the core model produces valid structured output with 100% reliability
-but emits valid native tool calls with 0% reliability. The architecture
-therefore uses a structured-output-driven tool execution model.
+Agents do not use native LLM tool-calling in the workflow. The project keeps
+LLM decisions in structured Pydantic outputs and lets deterministic node code
+perform file, test, and git actions through MCP. This avoids depending on
+local-model tool-call reliability for critical filesystem behavior.
 
 ```
 LLM agent  ──►  structured output      (the DECISION: what to do)
-                (Pydantic schema, 100% reliable)
+                (Pydantic schema + validation)
                        │
                        ▼
 Deterministic node  ──►  MCP tool call  (the ACTION: do it)
-                         (plain Python, 100% reliable)
+                         (plain Python + bounded MCP tools)
 ```
 
 The agent decides what should happen and returns it as structured data. The
 node — deterministic code — performs the action through an MCP tool. For
-example, the Developer agent returns a `CodeOutput` schema; the Developer
-node then calls the MCP filesystem tool to write each file. The QA agent
-returns test code; the QA node runs it through the MCP shell tool.
+example, the Developer agent returns a `CodeOutput` schema; the QA and
+Integrator nodes write the selected code into an isolated workspace before
+running tests or creating the final local commit. The QA agent returns test
+code; the QA node runs it through the MCP pytest tool.
 
 This is more reliable than native tool-calling on local models and keeps the
 decision (LLM) and the action (deterministic code) cleanly separated. MCP
@@ -297,7 +287,7 @@ remains the tool layer; only the caller changed from the LLM to node code.
 
 | Technology | Where it is used |
 |-----------|------------------|
-| LangGraph | Workflow orchestration, state machine, conditional edges, abatch |
+| LangGraph | Workflow orchestration, state machine, conditional edges |
 | LangChain | Agent prompts, structured output, LLM calls |
 | MCP | Filesystem, git, and shell tools, invoked by node code |
 | RAG (ChromaDB) | Retrieval of coding standards and examples as agent context |

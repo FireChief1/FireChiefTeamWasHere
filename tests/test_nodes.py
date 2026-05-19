@@ -10,6 +10,7 @@ from app.graph.nodes import (
     _parse_pytest,
     _public_names,
     _strip_code_fences,
+    _validate_code_files,
 )
 
 
@@ -77,3 +78,37 @@ def test_parse_pytest_treats_a_timeout_as_a_failure():
     results = _parse_pytest("TIMEOUT: test execution exceeded the time limit")
     assert results.failed == 1
     assert results.passed == 0
+
+
+def test_parse_pytest_treats_no_tests_as_a_failure():
+    results = _parse_pytest("no tests ran in 0.01s")
+    assert results.failed == 1
+    assert results.passed == 0
+    assert results.total == 1
+
+
+def test_parse_pytest_treats_skipped_only_runs_as_a_failure():
+    results = _parse_pytest("1 skipped in 0.01s")
+    assert results.failed == 1
+    assert results.passed == 0
+    assert results.total == 1
+
+
+def test_validate_code_files_accepts_a_simple_python_module():
+    assert _validate_code_files({"calculator.py": "def add(a, b):\n    return a + b\n"}) is None
+
+
+def test_validate_code_files_rejects_empty_output():
+    assert "no source files" in (_validate_code_files({}) or "")
+
+
+def test_validate_code_files_rejects_unsupported_filenames():
+    error = _validate_code_files({"src/calculator.py": "def add():\n    return 1\n"})
+    assert error is not None
+    assert "unsupported filename" in error
+
+
+def test_validate_code_files_rejects_syntax_errors():
+    error = _validate_code_files({"calculator.py": "def broken(:\n"})
+    assert error is not None
+    assert "invalid Python" in error

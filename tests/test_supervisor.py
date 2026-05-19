@@ -55,6 +55,22 @@ async def test_supervisor_stops_when_the_loop_makes_no_progress():
     assert update["status"] == "FAILED"
 
 
+async def test_supervisor_restores_prior_best_code_when_current_code_is_worse():
+    state: AgentState = {
+        "review_feedback": [_blocker(), _blocker()],
+        "iteration": 1,
+        "issue_count_history": [1],
+        "best_code": {"best.py": "def ok():\n    return True\n"},
+        "code": {"current.py": "def worse():\n    return False\n"},
+        "max_iterations": 3,
+    }
+
+    update = await supervisor_node(state)
+
+    assert update["status"] == "FAILED"
+    assert update["code"] == {"best.py": "def ok():\n    return True\n"}
+
+
 def test_route_sends_success_to_the_integrator():
     assert route_after_supervisor({"status": "SUCCESS"}) == "integrator"
 

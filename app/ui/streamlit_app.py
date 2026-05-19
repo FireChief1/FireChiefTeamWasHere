@@ -68,7 +68,7 @@ def next_stage(node: str, update: dict[str, Any]) -> str | None:
         status = update.get("status")
         if status == "RUNNING":
             return "developer"
-        if status == "SUCCESS":
+        if status in ("SUCCESS", "COMPLETED_WITH_WARNINGS"):
             return "integrator"
     return None
 
@@ -156,6 +156,13 @@ def render_result(box: Any, state: dict[str, Any]) -> None:
     if results is not None:
         box.write(f"**Testler:** {results.passed} geçti, {results.failed} kaldı")
 
+    if state.get("is_degraded"):
+        box.warning("Bu çalışma degraded model havuzuyla tamamlandı.")
+
+    if state.get("node_error"):
+        box.markdown("**Node hatası:**")
+        box.code(str(state["node_error"]), language="text")
+
     for filename, content in (state.get("code") or {}).items():
         box.markdown(f"**{filename}**")
         box.code(content, language="python")
@@ -195,6 +202,7 @@ async def run_workflow(
     max_iterations: int,
     use_rag: bool,
     status_box: Any,
+    degraded_box: Any,
     tracker_box: Any,
     detail_container: Any,
     result_box: Any,
@@ -207,6 +215,14 @@ async def run_workflow(
     pool = build_default_pool()
     set_pool(pool)
     await pool.warm_up()
+    is_degraded = pool.is_degraded
+    if is_degraded:
+        degraded_box.warning(
+            "Model havuzu degraded modda: bazı kabiliyetler fallback'e "
+            "düşebilir veya istek başarısız olabilir."
+        )
+    else:
+        degraded_box.empty()
 
     workflow = build_workflow()
     initial: AgentState = {
@@ -217,6 +233,7 @@ async def run_workflow(
         "status": "RUNNING",
         "max_iterations": max_iterations,
         "use_rag": use_rag,
+        "is_degraded": is_degraded,
     }
 
     statuses["rag"] = "active"
@@ -274,6 +291,7 @@ if go:
         st.error("Lütfen bir görev girin.")
     else:
         status_ph = st.empty()
+        degraded_ph = st.empty()
         tracker_ph = st.empty()
         st.markdown("### Akış Detayları")
         detail_box = st.container()
@@ -285,6 +303,7 @@ if go:
                 cfg_max_iterations,
                 cfg_use_rag,
                 status_ph,
+                degraded_ph,
                 tracker_ph,
                 detail_box,
                 result_ph,
