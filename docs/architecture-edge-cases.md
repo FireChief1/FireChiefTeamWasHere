@@ -81,9 +81,9 @@ Each edge case lists the scenario, its impact, the resolution built into the arc
 
 **Impact:** CRITICAL — the Developer has no instructions to act on.
 
-**Resolution (PARTIAL):** The Analyst uses structured output, so malformed responses fail at the LLM call boundary and are caught by the node error boundary. Empty-plan graceful fallback is not currently implemented.
+**Resolution (HARDENED):** The Analyst uses structured output, so malformed responses fail at the LLM call boundary and are caught by the node error boundary. Empty or whitespace-only plan steps are removed; if the plan is still empty, the Analyst is retried once. If the retry is also empty, the workflow uses a fallback plan: "Implement directly from the task description."
 
-**Implemented in:** `agents/analyst.py`, `agents/base.py`, `graph/error_boundary.py`.
+**Implemented in:** `agents/analyst.py`, `agents/base.py`, `graph/nodes.py`, `graph/error_boundary.py`.
 
 ### EC-08: Developer output cannot be parsed
 
@@ -273,7 +273,7 @@ Each edge case lists the scenario, its impact, the resolution built into the arc
 
 **Impact:** IMPORTANT — the commit step fails.
 
-**Resolution (PARTIAL):** The Integrator asks the workspace MCP server to initialize a git repository if needed, check out the target feature branch, add a generated `.gitignore`, and commit. Branch suffixing and detailed git failure propagation are not currently implemented; a failed commit returns a "commit skipped" message.
+**Resolution (HARDENED):** The Integrator asks the workspace MCP server to initialize a git repository if needed, choose the target feature branch or the next available numeric suffix, add a generated `.gitignore`, and commit. The git tool returns structured commit metadata (`committed`, `branch`, `message`) and the Integrator writes it back into workflow state. A failed commit returns `committed: false` with a clear message.
 
 **Implemented in:** `graph/integrator.py`, `mcp_servers/workspace_server.py`.
 
@@ -287,7 +287,7 @@ Each edge case lists the scenario, its impact, the resolution built into the arc
 
 **Impact:** CRITICAL — agents may crash when retrieval returns nothing, or silently lose all standards context.
 
-**Resolution (HANDLED):** The retriever degrades gracefully: if the collection is empty or unavailable, retrieval returns an empty list and agents proceed with no RAG context. The UI shows "RAG context unavailable" in the node detail when no chunks are returned. There is no blocking startup check.
+**Resolution (HANDLED):** The retriever degrades gracefully: if the collection is empty or unavailable, retrieval returns an empty result with status metadata and agents proceed with no RAG context. The workflow records `rag_status`, `rag_message`, and `rag_chunk_count`; the UI shows whether RAG was retrieved, empty, disabled, or unavailable. There is no blocking startup check.
 
 **Implemented in:** `rag/retriever.py`, `graph/nodes.py`, `ui/streamlit_app.py`.
 
@@ -332,7 +332,7 @@ Each edge case lists the scenario, its impact, the resolution built into the arc
 | EC-03 | CRITICAL | PARTIAL | Degraded state + UI banner when fallback is possible/configured |
 | EC-04 | IMPORTANT | HARDENED | Warm-up phase |
 | EC-05 | CRITICAL | HANDLED | NUM_PARALLEL=1, model sizing |
-| EC-07 | CRITICAL | PARTIAL | Structured output + error boundary |
+| EC-07 | CRITICAL | HARDENED | Structured output + retry + fallback plan |
 | EC-08 | CRITICAL | HARDENED | Structured output + file validation + retry |
 | EC-09 | IMPORTANT | HANDLED | Review loop |
 | EC-10 | CRITICAL | HARDENED | Structured output + retry + fail-closed error boundary |
@@ -350,8 +350,8 @@ Each edge case lists the scenario, its impact, the resolution built into the arc
 | EC-22 | CRITICAL | HANDLED | Only bounded pytest tool exposed |
 | EC-23 | IMPORTANT | PARTIAL | MCP failures caught by node boundary |
 | EC-24 | IMPORTANT | HANDLED | File-write failures become node errors |
-| EC-25 | IMPORTANT | PARTIAL | Git init + commit; branch suffixing not implemented |
-| EC-26 | CRITICAL | HANDLED | RAG graceful degradation |
+| EC-25 | IMPORTANT | HARDENED | Git init + branch suffix + commit metadata |
+| EC-26 | CRITICAL | HANDLED | RAG graceful degradation + UI status |
 | EC-27 | IMPORTANT | HANDLED | Embedding failures degrade to empty RAG |
 | EC-28 | IMPORTANT | HARDENED | UI input validation |
 | EC-29 | MINOR | PLANNED | Explicit reconnect/resume support |

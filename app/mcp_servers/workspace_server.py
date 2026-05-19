@@ -12,9 +12,11 @@ Run as a standalone MCP server (stdio transport):
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -134,6 +136,33 @@ def _ensure_gitignore(target: Path) -> None:
     )
 
 
+def _git_failure(message: str, branch: str = "") -> str:
+    """Serialize an unsuccessful git integration result."""
+    return json.dumps(
+        {
+            "committed": False,
+            "branch": branch,
+            "message": message,
+        }
+    )
+
+
+def _git_success(message: str, branch: str) -> str:
+    """Serialize a successful git integration result."""
+    return json.dumps(
+        {
+            "committed": True,
+            "branch": branch,
+            "message": message,
+        }
+    )
+
+
+def _git_stderr(result: subprocess.CompletedProcess[str]) -> str:
+    """Return a compact git error string."""
+    return (result.stderr or result.stdout or "").strip()
+
+
 @mcp.tool()
 def git_commit(rel_dir: str, message: str, branch: str) -> str:
     """Initialize a git repo if needed and commit a workspace directory.
@@ -155,13 +184,55 @@ def git_commit(rel_dir: str, message: str, branch: str) -> str:
         )
 
     if not (target / ".git").exists():
-        git("init", "-q")
-        git("checkout", "-q", "-b", branch)
-    git("add", "-A")
+        init = git("init", "-q")
+        if init.returncode != 0:
+            return _git_failure(f"git init failed: {_git_stderr(init)}")
+
+    try:
+        selected_branch = _next_available_branch(git, branch)
+    except RuntimeError as exc:
+        return _git_failure(str(exc))
+    checkout = git("checkout", "-q", "-b", selected_branch)
+    if checkout.returncode != 0:
+        return _git_failure(
+            f"git checkout failed: {_git_stderr(checkout)}",
+            selected_branch,
+        )
+
+    add = git("add", "-A")
+    if add.returncode != 0:
+        return _git_failure(
+            f"git add failed: {_git_stderr(add)}",
+            selected_branch,
+        )
+
     result = git("commit", "-q", "-m", message)
     if result.returncode == 0:
-        return f"committed on {branch}: {message}"
-    return f"commit skipped ({result.stderr.strip() or 'nothing to commit'})"
+        return _git_success(f"committed on {selected_branch}: {message}", selected_branch)
+    return _git_failure(
+        f"commit skipped ({_git_stderr(result) or 'nothing to commit'})",
+        selected_branch,
+    )
+
+
+def _next_available_branch(
+    git: Callable[..., subprocess.CompletedProcess[str]],
+    branch: str,
+    *,
+    max_attempts: int = 100,
+) -> str:
+    """Return `branch` or a numeric suffix that is not already a local branch."""
+    for index in range(max_attempts):
+        candidate = branch if index == 0 else f"{branch}-{index + 1}"
+        result = git(
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            f"refs/heads/{candidate}",
+        )
+        if result.returncode != 0:
+            return candidate
+    raise RuntimeError(f"could not find an available branch name for {branch}")
 
 
 if __name__ == "__main__":

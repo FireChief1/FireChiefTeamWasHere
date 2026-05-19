@@ -7,10 +7,12 @@ The node code is the MCP client; the LLM is never involved in tool calls.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import cast
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -56,13 +58,15 @@ class WorkspaceTools:
         )
         return _tool_text(result)
 
-    async def git_commit(self, rel_dir: str, message: str, branch: str) -> str:
+    async def git_commit(
+        self, rel_dir: str, message: str, branch: str
+    ) -> dict[str, object]:
         """Commit a workspace directory on a feature branch via the MCP server."""
         result = await self._session.call_tool(
             "git_commit",
             {"rel_dir": rel_dir, "message": message, "branch": branch},
         )
-        return _tool_text(result)
+        return cast(dict[str, object], json.loads(_tool_text(result)))
 
 
 @asynccontextmanager

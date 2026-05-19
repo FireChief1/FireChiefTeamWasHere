@@ -170,6 +170,11 @@ Before the workflow starts, a warm-up step sends a trivial prompt to each config
 
 Agents that must return structured data use `with_structured_output()`. The Developer node validates the returned files, retries once if the output is empty, unsupported, or syntactically invalid, and then fails honestly if the second attempt is still unusable. Reviewer structured-output failures are caught by the node error boundary, producing a FAILED workflow rather than an accidental approval. (EC-08, EC-10)
 
+The Analyst plan is also validated. Empty or whitespace-only plan steps are
+discarded; if the plan is still empty after one retry, the workflow uses a
+single fallback step that instructs the Developer to implement directly from
+the task description. This keeps a weak plan from stalling the whole run.
+
 ### Bounded Test Execution
 
 The QA node runs generated tests under a hard subprocess timeout. A hanging test is killed and reported as a failing test. A syntactically invalid test file, a run with no collected tests, or a skipped-only run is treated as a failure so the workflow never reports success without real test execution. (EC-11)
@@ -184,7 +189,7 @@ State carries structured fields, not a growing message transcript. Each node rec
 
 ### Graceful RAG Degradation
 
-If the RAG knowledge base is empty or retrieval returns nothing, agents proceed with an empty context string and log the event. Missing RAG degrades quality but never crashes the workflow. (EC-26)
+If the RAG knowledge base is empty, unavailable, disabled, or returns nothing, agents proceed with an empty context string and the workflow records `rag_status`, `rag_message`, and `rag_chunk_count` for the UI. Missing RAG degrades quality but never crashes the workflow. (EC-26)
 
 ## Data Flow: The State Object
 
@@ -197,8 +202,14 @@ AgentState fields:
   plan              list[str]      from Analyst
   code              dict[str,str]  filename -> content, from Developer
   rag_context       list[str]      retrieved chunks
+  rag_status        str            retrieved, empty, disabled, or unavailable
+  rag_message       str            user-facing RAG status detail
+  rag_chunk_count   int            retrieved chunk count
   review_feedback   list[Feedback] from Reviewer
   test_results      TestResults    from QA
+  integration_message str          git commit result from Integrator
+  integration_branch  str          local branch used by Integrator
+  integration_committed bool       whether Integrator created a commit
   iteration         int            current loop iteration
   issue_count_history  list[int]   for oscillation detection
   best_code         dict[str,str]  best version seen so far
@@ -248,13 +259,13 @@ The current UI runs one task at a time through the sequential graph:
 RAG -> Analyst -> Developer -> Reviewer -> QA -> Supervisor -> Integrator
 ```
 
-Generated task output is isolated under `workspace/task-{id}/`; successful or warning-completed tasks are committed in that directory on `feat/task-{id}`. A future batch runner can use LangGraph `abatch(..., return_exceptions=True)` over the same compiled workflow, but `app/graph/pipeline.py` and a multi-task UI are not part of the current implementation.
+Generated task output is isolated under `workspace/task-{id}/`; successful or warning-completed tasks are committed in that directory on `feat/task-{id}`. If that branch already exists in the generated task repository, the MCP git tool appends a numeric suffix such as `feat/task-{id}-2`. A future batch runner can use LangGraph `abatch(..., return_exceptions=True)` over the same compiled workflow, but `app/graph/pipeline.py` and a multi-task UI are not part of the current implementation.
 
 ## Git and Remote Push
 
 Agents do not push to a remote. The deterministic Integrator writes final code through the workspace MCP server and asks that server to create a local git commit.
 
-After a SUCCESS or COMPLETED_WITH_WARNINGS result, the Integrator creates `workspace/task-{id}/`, initializes a git repository there if needed, checks out `feat/task-{id}`, writes a `.gitignore` for generated test artefacts, and commits the generated code and tests with a deterministic `feat:` subject derived from the task. FAILED tasks never reach the Integrator.
+After a SUCCESS or COMPLETED_WITH_WARNINGS result, the Integrator creates `workspace/task-{id}/`, initializes a git repository there if needed, checks out `feat/task-{id}` or an available suffixed branch, writes a `.gitignore` for generated test artefacts, and commits the generated code and tests with a deterministic `feat:` subject derived from the task. The Integrator writes `integration_message`, `integration_branch`, and `integration_committed` back into workflow state for the UI. FAILED tasks never reach the Integrator.
 
 ## Tool Execution Model
 

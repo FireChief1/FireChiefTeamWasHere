@@ -22,8 +22,10 @@ from app.config import settings
 from app.graph.error_boundary import node_error_boundary
 from app.graph.state import AgentState, FeedbackItem, TestResults
 from app.llm.pool import get_pool
-from app.rag.retriever import retrieve
+from app.rag.retriever import retrieve_with_status
 from app.tools.mcp_client import workspace_tools
+
+_ANALYST_FALLBACK_PLAN = ["Implement directly from the task description."]
 
 
 @node_error_boundary
@@ -35,20 +37,52 @@ async def rag_node(state: AgentState) -> dict[str, Any]:
     """
     if state.get("use_rag") is False:
         logger.info("RAG: disabled for this run")
-        return {"rag_context": [], "rag_sources": []}
-    chunks = await asyncio.to_thread(retrieve, state["task"])
+        return {
+            "rag_context": [],
+            "rag_sources": [],
+            "rag_status": "disabled",
+            "rag_message": "RAG disabled for this run.",
+            "rag_chunk_count": 0,
+        }
+    retrieval = await asyncio.to_thread(retrieve_with_status, state["task"])
+    chunks = retrieval.chunks
     logger.info(f"RAG: retrieved {len(chunks)} chunk(s)")
+    if not chunks:
+        return {
+            "rag_context": [],
+            "rag_sources": [],
+            "rag_status": retrieval.status,
+            "rag_message": retrieval.message,
+            "rag_chunk_count": 0,
+        }
     return {
         "rag_context": [f"[{chunk.source}]\n{chunk.text}" for chunk in chunks],
         "rag_sources": [chunk.source for chunk in chunks],
+        "rag_status": "retrieved",
+        "rag_message": retrieval.message,
+        "rag_chunk_count": len(chunks),
     }
 
 
 @node_error_boundary
 async def analyst_node(state: AgentState) -> dict[str, Any]:
     """Run the Analyst to produce an implementation plan."""
-    result = await AnalystAgent(get_pool()).run(state)
-    return {"plan": result.steps}
+    agent = AnalystAgent(get_pool())
+    result = await agent.run(state)
+    plan = _clean_plan(result.steps)
+    if not plan:
+        logger.warning("Analyst produced an empty plan; retrying once")
+        result = await agent.run(state)
+        plan = _clean_plan(result.steps)
+    if not plan:
+        logger.warning("Analyst plan fallback activated")
+        plan = list(_ANALYST_FALLBACK_PLAN)
+    return {"plan": plan}
+
+
+def _clean_plan(steps: list[str]) -> list[str]:
+    """Remove blank plan steps while preserving order."""
+    return [step.strip() for step in steps if step.strip()]
 
 
 @node_error_boundary

@@ -70,10 +70,16 @@ class AgentState(TypedDict, total=False):
         dev_assumptions: Assumptions and uncertainties the Developer noted.
         rag_context: Coding-standard chunks retrieved for the current step.
         rag_sources: The document names the RAG chunks were retrieved from.
+        rag_status: Whether RAG was retrieved, empty, disabled, or unavailable.
+        rag_message: Human-readable RAG status detail for the UI.
+        rag_chunk_count: Number of retrieved chunks.
         review_feedback: Findings from the Reviewer.
         test_results: The outcome from the QA agent.
         test_code: The pytest test file the QA agent generated and ran.
         test_cases: A plain-language description of each generated test.
+        integration_message: Human-readable git integration result.
+        integration_branch: Local branch used for the generated task commit.
+        integration_committed: True if the Integrator created a commit.
         iteration: The current Developer-Reviewer loop iteration.
         issue_count_history: Issue count per iteration, for oscillation detection.
         best_code: The lowest-issue code version seen so far.
@@ -94,10 +100,16 @@ class AgentState(TypedDict, total=False):
     dev_assumptions: list[str]
     rag_context: list[str]
     rag_sources: list[str]
+    rag_status: Literal["disabled", "retrieved", "empty", "unavailable"]
+    rag_message: str
+    rag_chunk_count: int
     review_feedback: list[FeedbackItem]
     test_results: TestResults
     test_code: str
     test_cases: list[str]
+    integration_message: str
+    integration_branch: str
+    integration_committed: bool
     iteration: int
     issue_count_history: list[int]
     best_code: dict[str, str]

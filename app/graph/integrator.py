@@ -28,7 +28,14 @@ async def integrator_node(state: AgentState) -> dict[str, Any]:
     async with workspace_tools() as tools:
         for filename, content in code.items():
             await tools.write_file(f"{task_rel}/{filename}", content)
-        message = await tools.git_commit(task_rel, f"feat: {subject}", branch)
+        result = await tools.git_commit(task_rel, f"feat: {subject}", branch)
 
+    message = str(result.get("message") or "")
+    selected_branch = str(result.get("branch") or branch)
+    committed = bool(result.get("committed"))
     logger.info(f"integrator: {message}")
-    return {}
+    return {
+        "integration_message": message,
+        "integration_branch": selected_branch,
+        "integration_committed": committed,
+    }

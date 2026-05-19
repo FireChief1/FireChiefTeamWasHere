@@ -84,7 +84,14 @@ def render_node_detail(node: str, update: dict[str, Any], iteration: int) -> Non
                 for source in sources:
                     st.markdown(f"- `{source}`")
             else:
-                st.info("RAG bağlamı yok — standartsız devam ediliyor.")
+                status = update.get("rag_status", "empty")
+                message = update.get("rag_message") or "RAG bağlamı yok."
+                if status == "disabled":
+                    st.info(message)
+                elif status == "unavailable":
+                    st.warning(message)
+                else:
+                    st.info(message)
         elif node == "analyst":
             steps = update.get("plan") or []
             st.markdown(f"Görevi **{len(steps)} adıma** böldü:")
@@ -138,7 +145,16 @@ def render_node_detail(node: str, update: dict[str, Any], iteration: int) -> Non
             if history:
                 st.caption(f"İterasyon başına sorun sayısı: {history}")
         elif node == "integrator":
-            st.markdown("Üretilen kod yerel bir git feature branch'ine commit edildi.")
+            if update.get("integration_committed"):
+                st.success(
+                    "Üretilen kod yerel bir git feature branch'ine commit edildi."
+                )
+            else:
+                st.warning("Integrator commit oluşturamadı veya commit atlanmış.")
+            if update.get("integration_branch"):
+                st.markdown(f"Branch: `{update['integration_branch']}`")
+            if update.get("integration_message"):
+                st.caption(str(update["integration_message"]))
 
 
 def render_result(box: Any, state: dict[str, Any]) -> None:
@@ -162,6 +178,21 @@ def render_result(box: Any, state: dict[str, Any]) -> None:
     if state.get("node_error"):
         box.markdown("**Node hatası:**")
         box.code(str(state["node_error"]), language="text")
+
+    if state.get("rag_status"):
+        box.write(
+            f"**RAG:** {state.get('rag_status')} "
+            f"({state.get('rag_chunk_count', 0)} parça)"
+        )
+        if state.get("rag_message"):
+            box.caption(str(state["rag_message"]))
+
+    if state.get("integration_branch"):
+        box.write(f"**Git branch:** `{state['integration_branch']}`")
+        if state.get("integration_committed"):
+            box.success(str(state.get("integration_message") or "Commit oluşturuldu."))
+        else:
+            box.warning(str(state.get("integration_message") or "Commit atlandı."))
 
     for filename, content in (state.get("code") or {}).items():
         box.markdown(f"**{filename}**")
