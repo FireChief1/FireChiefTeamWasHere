@@ -91,9 +91,9 @@ Each edge case lists the scenario, its impact, the resolution built into the arc
 
 **Impact:** CRITICAL — there is no code to review or test.
 
-**Resolution (HARDENED):** LangChain `with_structured_output()` constrains the response to a Pydantic schema. The Developer node then validates that at least one simple Python module was produced, each file is non-empty, and every file parses as Python. Invalid output is retried once; if the retry is still invalid, the workflow ends as FAILED with `node_error`.
+**Resolution (HARDENED):** LangChain `with_structured_output()` constrains the response to a Pydantic schema. The Developer node then applies profile-aware validation: Python tasks require safe Python modules that parse, static-web tasks require safe HTML/CSS/JS artifacts, documentation tasks require Markdown/text output, and project advisory tasks are constrained to `PROJECT_PROPOSAL.md`. Invalid output is retried once; if the retry is still invalid, non-project tasks end as FAILED with `node_error` and project advisory tasks fall back to a deterministic proposal.
 
-**Implemented in:** `agents/developer.py`, `graph/nodes.py` — structured output, file validation, one retry, honest failure.
+**Implemented in:** `agents/developer.py`, `graph/developer_step.py`, `graph/code_validation.py` — structured output, profile-aware file validation, one retry, honest failure/fallback.
 
 ### EC-09: Developer writes code unrelated to the task
 
@@ -131,9 +131,9 @@ Each edge case lists the scenario, its impact, the resolution built into the arc
 
 **Impact:** IMPORTANT — tests cannot run.
 
-**Resolution (HARDENED):** Developer output is parsed before review and QA. Syntax errors trigger one Developer retry and then a FAILED workflow if the retry is still invalid. If pytest reports a collection error, QA parses that as a failing result and feeds it into review feedback.
+**Resolution (HARDENED):** Profile-specific Developer output is validated before review and QA. Python syntax errors trigger one Developer retry and then a FAILED workflow if the retry is still invalid. Static-web and advisory profiles use their own artifact checks so HTML/docs/project outputs are not incorrectly forced through Python parsing. If pytest reports a collection error for Python tasks, QA parses that as a failing result and feeds it into review feedback.
 
-**Implemented in:** `graph/nodes.py`.
+**Implemented in:** `graph/developer_step.py`, `graph/code_validation.py`, `graph/qa_step.py`, `graph/static_web_qa.py`, `graph/advisory_qa.py`.
 
 ### EC-13: A node raises an unhandled Python exception
 
@@ -269,11 +269,11 @@ Each edge case lists the scenario, its impact, the resolution built into the arc
 
 ### EC-25: Git not initialized or branch already exists
 
-**Scenario:** The Integrator runs but the workspace is not a git repository, or the target branch name is taken.
+**Scenario:** The Integrator runs in generated-code mode but the workspace is not a git repository, or the target branch name is taken.
 
 **Impact:** IMPORTANT — the commit step fails.
 
-**Resolution (HARDENED):** The Integrator asks the workspace MCP server to initialize a git repository if needed, choose the target feature branch or the next available numeric suffix, add a generated `.gitignore`, and commit. The git tool returns structured commit metadata (`committed`, `branch`, `message`) and the Integrator writes it back into workflow state. A failed commit returns `committed: false` with a clear message.
+**Resolution (HARDENED):** In generated-code mode, the Integrator asks the workspace MCP server to initialize a git repository if needed, choose the target feature branch or the next available numeric suffix, add a generated `.gitignore`, and commit. The git tool returns structured commit metadata (`committed`, `branch`, `message`) and the Integrator writes it back into workflow state. A failed commit returns `committed: false` with a clear message. In Project Mode, the Integrator does not commit or push; it produces a diff preview and only writes selected-folder files after explicit apply.
 
 **Implemented in:** `graph/integrator.py`, `mcp_servers/workspace_server.py`.
 
@@ -307,9 +307,9 @@ Each edge case lists the scenario, its impact, the resolution built into the arc
 
 **Impact:** IMPORTANT — the workflow runs on nothing.
 
-**Resolution (HARDENED):** Input is validated at the UI boundary before the workflow starts. Empty or whitespace-only input is rejected with an inline error message; the workflow is not invoked.
+**Resolution (HARDENED):** Input is validated at the UI boundary before the workflow starts. Empty or whitespace-only input is rejected with an inline error message; the workflow is not invoked. In Project Mode, non-empty chat first passes through the Project Chat Router; direct conversation/help/status/clarify routes are answered without starting Project Intake, Developer, Reviewer, QA, file writes, commits, or pushes.
 
-**Implemented in:** `ui/streamlit_app.py` — input validation.
+**Implemented in:** `ui/streamlit_app.py`, `graph/project_chat_intent.py`, `agents/project_chat_router.py`, `agents/project_chat_responder.py`.
 
 ### EC-29: UI disconnects mid-task
 
@@ -350,10 +350,10 @@ Each edge case lists the scenario, its impact, the resolution built into the arc
 | EC-22 | CRITICAL | HANDLED | Only bounded pytest tool exposed |
 | EC-23 | IMPORTANT | PARTIAL | MCP failures caught by node boundary |
 | EC-24 | IMPORTANT | HANDLED | File-write failures become node errors |
-| EC-25 | IMPORTANT | HARDENED | Git init + branch suffix + commit metadata |
+| EC-25 | IMPORTANT | HARDENED | Generated-code git init/branch suffix/commit metadata; Project Mode preview/apply |
 | EC-26 | CRITICAL | HANDLED | RAG graceful degradation + UI status |
 | EC-27 | IMPORTANT | HANDLED | Embedding failures degrade to empty RAG |
-| EC-28 | IMPORTANT | HARDENED | UI input validation |
+| EC-28 | IMPORTANT | HARDENED | UI input validation + Project Chat routing gate |
 | EC-29 | MINOR | PLANNED | Explicit reconnect/resume support |
 
 Statuses reflect the current repository implementation. Planned items are

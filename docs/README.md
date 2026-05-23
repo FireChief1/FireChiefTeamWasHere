@@ -8,6 +8,12 @@ This directory contains the documentation that powers the RAG (Retrieval-Augment
 docs/
 ├── architecture.md            # System architecture (revised, resilience-hardened)
 ├── architecture-edge-cases.md # Failure-mode register (FMEA)
+├── architecture/          # Architecture review and design decision guidance
+│   ├── clean-architecture.md
+│   ├── overengineering-guards.md
+│   ├── project-review-checklist.md
+│   ├── refactoring-heuristics.md
+│   └── solid-principles.md
 ├── coding-standards/      # How code should be written
 │   ├── python-style-guide.md
 │   ├── naming-conventions.md
@@ -18,13 +24,21 @@ docs/
 │   └── common-issues.md
 ├── testing/               # Testing standards
 │   ├── pytest-patterns.md
-│   └── test-design.md
+│   ├── test-design.md
+│   └── test-strategy.md
+├── frontend/              # Static web and UI quality guidance
+│   ├── html-css-standards.md
+│   ├── static-site-quality.md
+│   └── static-ui-quality.md
 ├── security/              # Security guidelines
 │   └── security-guidelines.md
 ├── patterns/              # Design patterns
 │   ├── async-patterns.md
 │   ├── error-handling.md
 │   └── design-patterns.md
+├── project-mode/          # Project Mode output and file safety rules
+│   ├── advisory-output.md
+│   └── file-output-rules.md
 └── git/                   # Version control
     └── commit-conventions.md
 ```
@@ -34,9 +48,11 @@ docs/
 | Agent | Primary Documents |
 |-------|-------------------|
 | **Analyst** | design-patterns.md, async-patterns.md |
-| **Developer** | python-style-guide.md, naming-conventions.md, type-hints.md, docstring-standards.md, design-patterns.md, async-patterns.md, error-handling.md |
+| **Developer** | python-style-guide.md, naming-conventions.md, type-hints.md, docstring-standards.md, design-patterns.md, async-patterns.md, error-handling.md, solid-principles.md, refactoring-heuristics.md |
 | **Reviewer** | review-checklist.md, common-issues.md, python-style-guide.md, security-guidelines.md |
 | **QA** | pytest-patterns.md, test-design.md |
+| **Project Mode** | project-review-checklist.md, advisory-output.md, clean-architecture.md, overengineering-guards.md, file-output-rules.md |
+| **Static Web** | html-css-standards.md, static-site-quality.md, static-ui-quality.md |
 
 ## RAG Optimization Notes
 

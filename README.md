@@ -23,8 +23,10 @@ Agents collaborate under a LangGraph orchestrator:
 | Routed Reviewer | Uses the Python or Static Web reviewer persona |
 | Routed QA | Runs pytest for Python or deterministic static-web checks |
 
-A deterministic Supervisor decides whether to loop back for fixes or finish,
-and a deterministic Integrator commits the result to a local git branch.
+A deterministic Supervisor decides whether to loop back for fixes or finish.
+The deterministic Integrator commits generated-code runs to a local branch,
+while Project Mode uses preview/apply and does not commit or push the selected
+project automatically.
 
 The UI also includes a **Project Mode** foundation. In that mode the workflow
 accepts a target project folder, starts with Project Intake and Project Brief
@@ -78,7 +80,7 @@ All components are free and open-source (MIT / Apache 2.0).
 ## Deployment
 
 - **Core:** a single machine running `qwen2.5-coder:14b`. One model serves
-  four agent personas.
+  multiple focused personas through CODER, REASONER, and FALLBACK capabilities.
 - **Current workflow:** one task at a time through a sequential LangGraph state
   machine: Project Intake -> Project Brief -> Task Classifier -> RAG ->
   Analyst -> Developer -> Reviewer -> QA -> Supervisor -> Integrator. Project

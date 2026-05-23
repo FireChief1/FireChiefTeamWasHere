@@ -2,7 +2,14 @@
 
 This document describes the architecture of the multi-agent code development system. It is the revised design that incorporates the resilience mechanisms identified in `architecture-edge-cases.md`.
 
-The system simulates a software development team using local LLMs. Specialized agents (Analyst, Developer, Reviewer, QA) collaborate under an orchestrator to turn a task description into reviewed, tested code. Project Mode adds a target project folder, project intake, unified diff previews, and an explicit apply button so agents can reason with project-level context without silently changing the selected folder.
+The system simulates a software development team using local LLMs.
+Specialized personas collaborate under a LangGraph orchestrator to turn a
+task description into reviewed, tested code. Project Mode adds a chat-first
+project workspace: a model-first Project Chat Router decides whether a message
+should be answered directly or sent into the workflow, and Project Intake,
+Project Brief, unified diff previews, and an explicit apply button let agents
+reason with project-level context without silently changing the selected
+folder.
 
 ## Design Goals
 
@@ -30,14 +37,17 @@ The core, demo-critical deployment runs entirely on one machine.
 │ MCP servers (filesystem, shell, git)  │
 │ Ollama → qwen2.5-coder:14b            │
 │                                       │
-│ Four agents = four personas of the    │
+│ Multiple agent personas share the     │
 │ same model. CODER, REASONER and       │
 │ FALLBACK capabilities all resolve to  │
 │ this single node.                     │
 └──────────────────────────────────────┘
 ```
 
-An agent is defined by its system prompt (persona), its tools, the slice of state it reads, and its output schema — not by the model or machine it runs on. One model serving four personas is a complete multi-agent system.
+An agent is defined by its system prompt (persona), its tools, the slice of
+state it reads, and its output schema — not by the model or machine it runs
+on. One model serving many focused personas is still a complete multi-agent
+system.
 
 ### Optional Scale-Out (bonus)
 
@@ -69,7 +79,8 @@ The orchestrator software is organized in five layers. Each layer calls only the
 │                StateGraph, nodes, conditional edges,│
 │                error boundary                       │
 ├────────────────────────────────────────────────────┤
-│ AGENTS         Analyst, Developer, Reviewer, QA     │
+│ AGENTS         Chat Router/Responder, Analyst,      │
+│                profile-routed Developer/Reviewer/QA │
 │                + Supervisor, Integrator (nodes)     │
 ├────────────────────────────────────────────────────┤
 │ SERVICES       LLMPool, RAG Retriever, MCP Manager  │
@@ -94,7 +105,7 @@ The orchestrator software is organized in five layers. Each layer calls only the
 | Routed Reviewer | LLM agent | Use the profile-specific reviewer persona |
 | Routed QA | LLM/deterministic node | Run profile-specific validation |
 | Supervisor | Deterministic node | Decide: loop, finish, or fail |
-| Integrator | Deterministic node | Create branch and local commit on success |
+| Integrator | Deterministic node | Generated-code mode creates a local commit; Project Mode previews/applies selected-folder files without commit/push |
 | LLMPool | Service | Route requests to healthy nodes by capability |
 | RAG Retriever | Service | Provide relevant standards/examples as context |
 | MCP Manager | Service | Expose filesystem, git, and shell tools |
@@ -103,11 +114,30 @@ The Supervisor and Integrator are deterministic — they make no LLM judgment ca
 
 ## Workflow Graph (Revised with Resilience)
 
-```
 Project Mode chat first passes through the Project Chat Router. The router
 uses the local model as the primary semantic classifier, then a deterministic
 policy layer normalizes workflow flags and blocks low-confidence routes. Only
 `project_analysis` and `implementation` intents enter the graph below.
+
+```
+PROJECT MODE CHAT
+      │
+      ▼
+┌──────────────────────┐
+│ PROJECT CHAT ROUTER  │  model-first intent + policy normalization
+└──────────┬───────────┘
+           │
+   ┌───────┴──────────────────────────────┐
+   ▼                                      ▼
+conversation/help/status/clarify   project_analysis/implementation
+   │                                      │
+   ▼                                      ▼
+┌──────────────────────┐                 LangGraph workflow
+│ PROJECT CHAT         │                 below
+│ RESPONDER            │
+└──────────┬───────────┘
+           ▼
+          END
 
                     ┌─────────────┐
                     │   START     │
@@ -164,7 +194,8 @@ policy layer normalizes workflow flags and blocks low-confidence routes. Only
                             │
                             ▼
                       ┌──────────┐
-                      │INTEGRATOR│  writes final code and local commit
+                      │INTEGRATOR│  generated-code commit,
+                      │          │  Project Mode preview/apply
                       └────┬─────┘
                            ▼
                           END
@@ -199,9 +230,9 @@ local REASONER model through structured output rather than by a large phrase
 table. A deterministic policy layer still handles non-semantic safety rules:
 empty messages, invalid workflow flags, model failures, and confidence below
 the product threshold. Direct routes are then answered by the Project Chat
-Responder agent, which can talk about known project status/context but cannot
-start Developer, Reviewer, QA, file writes, commits, or pushes. The UI exposes
-the final route as compact metadata such as
+Responder agent, saved as project timeline messages when the registry is
+available, and never enter Project Intake, Developer, Reviewer, QA, file
+writes, commits, or pushes. The UI exposes the final route as compact metadata such as
 `model: project_analysis, confidence: 0.84`.
 
 ### Warm-Up Phase
@@ -316,7 +347,7 @@ A single `AgentState` object flows through the workflow, growing as each node co
 ```
 AgentState fields:
   task              str            original task description
-  mode              "generate"|"review"|"project"
+  mode              "generate"|"project" in the UI; "review" is retained in the state type as an extension point
   task_profile      "python"|"static_web"|"docs"|"project"
   task_profile_reason str          why the profile was selected
   project_path      str            selected project folder
@@ -343,10 +374,10 @@ AgentState fields:
   rag_chunk_count   int            retrieved chunk count
   review_feedback   list[Feedback] from Reviewer
   test_results      TestResults    from QA
-  integration_message str          git commit result from Integrator
-  integration_branch  str          local branch used by Integrator
-  integration_committed bool       whether Integrator created a commit
-  integration_target_path str      Project Mode folder written by Integrator
+  integration_message str          Integrator result or preview/apply message
+  integration_branch  str          local branch used by generated-code commits
+  integration_committed bool       true when generated-code mode created a local commit
+  integration_target_path str      Project Mode folder previewed/written by Integrator
   integration_planned_files list[str] Project Mode files proposed for writing
   integration_file_actions list[dict] create/modify/unchanged per file
   integration_diff str             unified diff for Project Mode preview
@@ -395,16 +426,19 @@ the UI.
 
 ## Current Execution Model and Future Pipeline
 
-The current UI runs one task at a time through the sequential graph:
+The current UI runs one workflow task at a time through the sequential graph.
+In Project Mode, direct conversation/help/status/clarify messages are handled
+before this graph by Project Chat Router -> Project Chat Responder:
 
 ```
 Project Intake -> Project Brief -> Task Classifier -> RAG -> Analyst -> Developer -> Reviewer -> QA -> Supervisor -> Integrator
 ```
 
 For normal generated-code runs, Project Intake and Project Brief are no-ops. In
-Project Mode they collect context from the selected `project_path` before RAG
-and planning, and the Integrator previews generated file writes as a unified
-diff. Generated task mode remains isolated under `workspace/task-{id}/`;
+Project Mode, only workflow-routed messages collect context from the selected
+`project_path` before RAG and planning, and the Integrator previews generated
+file writes as a unified diff. Generated task mode remains isolated under
+`workspace/task-{id}/`;
 successful or warning-completed tasks are committed in that directory on
 `feat/task-{id}`. If that branch already exists in the generated task
 repository, the MCP git tool appends a numeric suffix such as
@@ -415,9 +449,20 @@ implementation.
 
 ## Git and Remote Push
 
-Agents do not push to a remote. The deterministic Integrator writes final code through the workspace MCP server and asks that server to create a local git commit.
+Agents do not push to a remote. In generated-code mode, the deterministic
+Integrator writes final code through the workspace MCP server and asks that
+server to create a local git commit. In Project Mode, the Integrator is
+preview-only by default and writes to the selected project folder only after
+the user clicks the apply button; it does not create a commit or push.
 
-After a SUCCESS or COMPLETED_WITH_WARNINGS result, the Integrator creates `workspace/task-{id}/`, initializes a git repository there if needed, checks out `feat/task-{id}` or an available suffixed branch, writes a `.gitignore` for generated test artefacts, and commits the generated code and tests with a deterministic `feat:` subject derived from the task. The Integrator writes `integration_message`, `integration_branch`, and `integration_committed` back into workflow state for the UI. FAILED tasks never reach the Integrator.
+After a SUCCESS or COMPLETED_WITH_WARNINGS generated-code result, the
+Integrator creates `workspace/task-{id}/`, initializes a git repository there
+if needed, checks out `feat/task-{id}` or an available suffixed branch, writes
+a `.gitignore` for generated test artefacts, and commits the generated code
+and tests with a deterministic `feat:` subject derived from the task. The
+Integrator writes `integration_message`, `integration_branch`, and
+`integration_committed` back into workflow state for the UI. FAILED tasks
+never reach the Integrator.
 
 ## Tool Execution Model
 
@@ -439,8 +484,10 @@ The agent decides what should happen and returns it as structured data. The
 node — deterministic code — performs the action through an MCP tool. For
 example, the Developer agent returns a `CodeOutput` schema; the QA and
 Integrator nodes write the selected code into an isolated workspace before
-running tests or creating the final local commit. The QA agent returns test
-code; the QA node runs it through the MCP pytest tool.
+running tests or creating the final generated-code commit. In Project Mode,
+the Integrator first produces a diff preview for the selected folder and only
+writes files after explicit apply. The QA agent returns test code; the QA node
+runs it through the MCP pytest tool.
 
 This is more reliable than native tool-calling on local models and keeps the
 decision (LLM) and the action (deterministic code) cleanly separated. MCP

@@ -16,6 +16,7 @@ from app.rag.store import get_collection, get_embeddings
 
 _PROFILE_SOURCE_PREFIXES = {
     "python": (
+        "architecture/",
         "coding-standards/",
         "testing/",
         "patterns/",
@@ -30,6 +31,7 @@ _PROFILE_SOURCE_PREFIXES = {
     ),
     "docs": (
         "docs",
+        "architecture/",
         "project-mode/",
         "git/",
     ),
