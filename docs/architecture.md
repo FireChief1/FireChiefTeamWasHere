@@ -9,7 +9,8 @@ project workspace: a model-first Project Chat Router decides whether a message
 should be answered directly or sent into the workflow, and Project Intake,
 Project Brief, unified diff previews, and an explicit apply button let agents
 reason with project-level context without silently changing the selected
-folder.
+folder. The presentation layer is migrating from a Streamlit-first interface
+to a React + TypeScript + Vite workspace backed by a small local JSON API.
 
 ## Design Goals
 
@@ -32,7 +33,8 @@ The core, demo-critical deployment runs entirely on one machine.
 │ EVERYTHING                            │
 │                                       │
 │ LangGraph orchestration               │
-│ Streamlit UI                          │
+│ React/Vite UI + local JSON API        │
+│ Streamlit legacy UI                   │
 │ ChromaDB (RAG)                        │
 │ MCP servers (filesystem, shell, git)  │
 │ Ollama → qwen2.5-coder:14b            │
@@ -71,9 +73,9 @@ The orchestrator software is organized in five layers. Each layer calls only the
 
 ```
 ┌────────────────────────────────────────────────────┐
-│ PRESENTATION   Streamlit UI                         │
-│                task input, live agent activity,     │
-│                run history, final result            │
+│ PRESENTATION   React/Vite Project UI                │
+│                local JSON API, Streamlit legacy UI  │
+│                project chat, timeline, diff detail  │
 ├────────────────────────────────────────────────────┤
 │ ORCHESTRATION  LangGraph workflow                   │
 │                StateGraph, nodes, conditional edges,│
@@ -95,10 +97,13 @@ The orchestrator software is organized in five layers. Each layer calls only the
 | Component | Type | Responsibility |
 |-----------|------|----------------|
 | Project Chat Router | LLM router + policy | Decide whether a Project Mode chat message should be answered directly or sent into the workflow |
+| Project Action Router | Registry + policy | Convert chat intent into concrete actions such as `path_info`, `read_file`, `list_folder`, `analyze_project`, or `modify_project`; registered handlers validate and execute read-only actions |
 | Project Chat Responder | LLM agent | Answer direct chat/help/status/clarify messages without starting Developer/QA |
 | Project Intake | Deterministic node | Read-only repository scan for Project Mode |
 | Project Brief | Deterministic node | Detect stack, entrypoints, test commands, and risks |
 | Project Registry | Service | Persist projects and checkpoints in Postgres |
+| React Project UI | Presentation | Project sidebar, chat timeline, router metadata, checkpoints, and technical result panels |
+| Local JSON API | Presentation/API adapter | Serve project registry, folder browsing, and Project Chat workflow calls to the React UI without adding a Python web framework |
 | Task Classifier | Deterministic node | Select task profile: Python, Static Web, Docs, Project |
 | Analyst | LLM agent | Break the task into a structured plan |
 | Routed Developer | LLM agent | Use the profile-specific developer persona |
@@ -115,9 +120,14 @@ The Supervisor and Integrator are deterministic — they make no LLM judgment ca
 ## Workflow Graph (Revised with Resilience)
 
 Project Mode chat first passes through the Project Chat Router. The router
-uses the local model as the primary semantic classifier, then a deterministic
-policy layer normalizes workflow flags and blocks low-confidence routes. Only
-`project_analysis` and `implementation` intents enter the graph below.
+uses the local model as the primary semantic classifier, while a narrow
+deterministic guard handles empty messages and high-confidence read-only file
+actions. The resulting intent is converted into a concrete Project Action
+Decision. A small action registry owns action-specific validation and
+execution. Read-only actions such as `path_info`, `list_folder`, and
+`read_file` are validated against the selected project root and executed
+directly; only `analyze_project` and `modify_project` enter the LangGraph
+workflow below.
 
 ```
 PROJECT MODE CHAT
@@ -127,14 +137,22 @@ PROJECT MODE CHAT
 │ PROJECT CHAT ROUTER  │  model-first intent + policy normalization
 └──────────┬───────────┘
            │
-   ┌───────┴──────────────────────────────┐
-   ▼                                      ▼
-conversation/help/status/clarify   project_analysis/implementation
-   │                                      │
-   ▼                                      ▼
-┌──────────────────────┐                 LangGraph workflow
-│ PROJECT CHAT         │                 below
-│ RESPONDER            │
+           ▼
+┌──────────────────────┐
+│ PROJECT ACTION       │  direct_chat, project_status,
+│ ROUTER + POLICY      │  path_info, list_folder,
+│                      │  read_file,
+│                      │  analyze_project, modify_project
+└──────────┬───────────┘
+           │
+   ┌───────┴──────────────────────────────────────┐
+   ▼                                              ▼
+direct_chat/status/path_info/list_folder/read_file   analyze_project/modify_project
+   │                                              │
+   ▼                                              ▼
+┌──────────────────────┐                         LangGraph workflow
+│ DIRECT RESPONDER OR  │                         below
+│ READ-ONLY EXECUTOR   │
 └──────────┬───────────┘
            ▼
           END
@@ -222,18 +240,28 @@ Every node function is wrapped by the `@node_error_boundary` decorator. It catch
 ### Project Chat Intent Routing
 
 The Project Mode UI does not treat every message as a code task. The Project
-Chat Router runs before LangGraph and returns one of six intents:
-`conversation`, `help`, `status`, `project_analysis`, `implementation`, or
-`clarify`. Natural-language intent classification is model-first: casual
+Chat Router runs before LangGraph and returns structured intents:
+`conversation`, `file_inspection`, `folder_listing`, `path_info`, `help`, `status`,
+`project_analysis`, `implementation`, or `clarify`. Natural-language intent
+classification is model-first: casual
 Turkish/English, typos, and project-analysis phrasing are interpreted by the
 local REASONER model through structured output rather than by a large phrase
 table. A deterministic policy layer still handles non-semantic safety rules:
 empty messages, invalid workflow flags, model failures, and confidence below
-the product threshold. Direct routes are then answered by the Project Chat
-Responder agent, saved as project timeline messages when the registry is
-available, and never enter Project Intake, Developer, Reviewer, QA, file
-writes, commits, or pushes. The UI exposes the final route as compact metadata such as
-`model: project_analysis, confidence: 0.84`.
+the product threshold.
+
+After intent routing, Project Action Router maps the intent to a concrete
+action schema and dispatches executable actions through a registry. Examples:
+`conversation -> direct_chat`,
+`folder_listing -> list_folder`, `file_inspection -> read_file`,
+`path_info -> path_info`, `project_analysis -> analyze_project`, and
+`implementation -> modify_project`.
+Registered read-only handlers are checked against the selected project root,
+readable file extensions, and size limits before execution. Direct routes are saved as
+project timeline messages when the registry is available and never enter
+Project Intake, Developer, Reviewer, QA, file writes, commits, or pushes. The
+UI exposes both the final route and action metadata, for example
+`model: project_analysis, confidence: 0.84` and `action: analyze_project`.
 
 ### Warm-Up Phase
 
@@ -427,8 +455,9 @@ the UI.
 ## Current Execution Model and Future Pipeline
 
 The current UI runs one workflow task at a time through the sequential graph.
-In Project Mode, direct conversation/help/status/clarify messages are handled
-before this graph by Project Chat Router -> Project Chat Responder:
+In Project Mode, direct conversation, help, status, path-info, folder-listing,
+file-inspection, and clarify messages are handled before this graph by
+Project Chat Router -> Project Action Router/Policy -> Project Chat Responder:
 
 ```
 Project Intake -> Project Brief -> Task Classifier -> RAG -> Analyst -> Developer -> Reviewer -> QA -> Supervisor -> Integrator

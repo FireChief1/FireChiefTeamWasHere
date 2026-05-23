@@ -1,9 +1,9 @@
 # Multi-Agent Code Development Team
 
 A local multi-agent code development system that simulates a small software
-team using open-source LLMs. Specialized agents collaborate to turn a task
-description into reviewed, tested code — with no paid APIs and no data leaving
-the machine.
+team using open-source LLMs. Specialized agents collaborate to turn a project
+chat message or task description into reviewed, tested output — with no paid
+APIs and no data leaving the machine.
 
 Built as a final project for the Data Science / AI / LLM bootcamp.
 
@@ -14,6 +14,7 @@ Agents collaborate under a LangGraph orchestrator:
 | Agent | Role |
 |-------|------|
 | Project Chat Router | Uses the local model plus policy checks to decide chat vs workflow |
+| Project Action Router | Registry-backed action layer for `path_info`, `read_file`, `list_folder`, `analyze_project`, or `modify_project` |
 | Project Chat Responder | Answers direct conversation/status/help messages without Developer/QA |
 | Project Intake | Scans the selected project folder in Project Mode |
 | Project Brief | Detects stack, entrypoints, test commands, and risks |
@@ -28,7 +29,12 @@ The deterministic Integrator commits generated-code runs to a local branch,
 while Project Mode uses preview/apply and does not commit or push the selected
 project automatically.
 
-The UI also includes a **Project Mode** foundation. In that mode the workflow
+The primary UI is being migrated to a security-first **React + TypeScript +
+Vite** workspace backed by a small local Python JSON API. The older Streamlit
+surface remains available during the migration, but new Project Mode UI work
+lands in `frontend/` first.
+
+The UI includes a **Project Mode** foundation. In that mode the workflow
 accepts a target project folder, starts with Project Intake and Project Brief
 steps that scan that folder's files, task-related text matches, git status,
 bounded diff summary, stack signals, likely entrypoints, test commands, and
@@ -40,15 +46,19 @@ checkpoint history, timeline events, and saved project memory. Project Mode
 uses a chat-first main panel: the user sends a project message, the agent
 workflow runs in the background, and the final assistant response is saved back
 to the project timeline. Before the workflow starts, a Project Chat Intent
-Router asks the local model for a structured intent decision, then a small
-deterministic policy layer normalizes the result and blocks low-confidence
-routes. Casual questions, status checks, and help messages are answered by a
-separate Project Chat Responder without Project Intake, RAG, Developer,
-Reviewer, or QA. The UI shows compact routing metadata such as
-`model: project_analysis, confidence: 0.84`. Technical Project/Developer/QA
-events remain available in a collapsed details panel. The sidebar can rename
-or remove registry entries without touching files on disk. Registry reads use
-a short Streamlit cache so routine rerenders do not repeatedly hit Postgres.
+Router asks the local model for a structured intent decision, then a
+registry-backed Project Action layer maps that intent to concrete behavior and
+blocks low-confidence or unsafe routes. Casual questions, status checks, and
+help messages are answered by a separate Project Chat Responder without
+Project Intake, RAG, Developer, Reviewer, or QA. The UI shows compact routing
+metadata such as `model: project_analysis, confidence: 0.84`, plus action
+metadata such as `path_info`, `read_file`, or `analyze_project`. Read-only
+actions are handled by registered action handlers and validated against the selected
+project root before execution. Path requests return paths without reading file
+contents. Technical Project/Developer/QA events remain
+available in a collapsed details panel. The sidebar can rename or remove
+registry entries without touching files on disk. Registry reads use a short
+Streamlit cache so routine rerenders do not repeatedly hit Postgres.
 Successful Project Mode runs default to a preview-only Integrator step that
 shows a unified diff and the files that would be written. Generated files are
 applied only when the user clicks the Project Mode apply button, and that apply
@@ -74,6 +84,8 @@ produce Markdown/text files such as `README.md` or `docs/architecture.md`.
 - **MCP** — tool integration (filesystem, project search, shell, git)
 - **RAG (ChromaDB)** — retrieves coding standards as context for agents
 - **Ollama** — runs local Qwen2.5 models
+- **React + TypeScript + Vite** — project chat workspace UI
+- **Postgres** — project registry, timeline, checkpoints, run history
 
 All components are free and open-source (MIT / Apache 2.0).
 
@@ -112,15 +124,30 @@ docker compose up -d
 # 5. Ingest the knowledge base into RAG
 python -m app.rag.ingest
 
-# 6. Run the UI
+# 6. Run the local API for the React UI
+python -m app.api.server
+
+# 7. Install and run the React UI
+npm --prefix frontend ci --ignore-scripts
+npm --prefix frontend run dev
+
+# Legacy Streamlit UI remains available during migration
 streamlit run app/ui/streamlit_app.py
 ```
+
+Open the React workspace at `http://127.0.0.1:5173`. The local API listens on
+`http://127.0.0.1:8765`.
+
+Frontend dependencies are intentionally minimal and exact-pinned. Lifecycle
+install scripts are disabled in `frontend/.npmrc`; use `npm ci --ignore-scripts`
+instead of ad-hoc installs.
 
 ## Project Structure
 
 ```
 app/
 ├── config.py        # central settings
+├── api/             # local JSON API for the React UI
 ├── llm/             # capability-aware LLM pool
 ├── agents/          # Analyst, Developer, Reviewer, QA
 ├── graph/           # LangGraph workflow, supervisor, integrator
@@ -128,6 +155,7 @@ app/
 ├── tools/           # MCP tool integration
 ├── history.py       # Postgres-backed run history
 └── ui/              # Streamlit interface
+frontend/            # React + TypeScript + Vite project workspace UI
 docs/                # engineering standards + architecture (RAG knowledge base)
 tests/               # test suite
 ```
@@ -136,4 +164,5 @@ tests/               # test suite
 
 - `docs/architecture.md` — system architecture
 - `docs/architecture-edge-cases.md` — failure-mode register
+- `docs/frontend/supply-chain-security.md` — frontend dependency policy
 - `docs/` — coding standards, testing, security, patterns

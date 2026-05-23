@@ -14,12 +14,21 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.graph.project_actions import (
+    action_from_chat_decision,
+    detect_read_only_project_action,
+    execute_read_only_project_action,
+    normalize_project_message,
+)
 from app.graph.state import AgentState
 from app.llm.pool import build_default_pool
 
 ProjectChatIntent = Literal[
     "conversation",
+    "file_inspection",
+    "folder_listing",
     "help",
+    "path_info",
     "status",
     "project_analysis",
     "implementation",
@@ -28,7 +37,15 @@ ProjectChatIntent = Literal[
 ProjectChatRouteSource = Literal["policy", "model", "fallback"]
 
 _WORKFLOW_INTENTS = {"project_analysis", "implementation"}
-_DIRECT_INTENTS = {"conversation", "help", "status", "clarify"}
+_DIRECT_INTENTS = {
+    "conversation",
+    "file_inspection",
+    "folder_listing",
+    "help",
+    "path_info",
+    "status",
+    "clarify",
+}
 _MODEL_CONFIDENCE_FLOOR = 0.65
 
 
@@ -64,7 +81,7 @@ class ProjectChatDecision(BaseModel):
     intent: ProjectChatIntent = Field(
         description=(
             "conversation, help, status, project_analysis, implementation, "
-            "or clarify"
+            "file_inspection, folder_listing, path_info, or clarify"
         )
     )
     should_run_workflow: bool = Field(
@@ -99,13 +116,13 @@ def deterministic_project_chat_decision(
     message: str,
     context: ProjectChatContext | None = None,
 ) -> ProjectChatDecision | None:
-    """Return policy-only routing decisions.
+    """Return policy-only routing decisions before the model router.
 
-    V2 intentionally avoids phrase-heavy natural-language routing here. The
-    LLM router owns semantic intent classification; this function is a small
-    safety gate for cases that should never reach the model/workflow.
+    The LLM router owns semantic classification. This deterministic layer is
+    intentionally narrow: empty messages and high-confidence read-only file
+    actions are handled without starting the expensive workflow.
     """
-    del context
+    chat_context = context or ProjectChatContext()
     text = _clean(message)
     if not text:
         return _direct(
@@ -113,6 +130,29 @@ def deterministic_project_chat_decision(
             "Empty Project Chat message.",
             confidence=1.0,
             routed_by="policy",
+        )
+
+    action = detect_read_only_project_action(message, chat_context.project_path)
+    if action is not None and action.action == "read_file":
+        return _direct(
+            "file_inspection",
+            action.reason,
+            confidence=action.confidence,
+            routed_by=action.routed_by,
+        )
+    if action is not None and action.action == "path_info":
+        return _direct(
+            "path_info",
+            action.reason,
+            confidence=action.confidence,
+            routed_by=action.routed_by,
+        )
+    if action is not None and action.action == "list_folder":
+        return _direct(
+            "folder_listing",
+            action.reason,
+            confidence=action.confidence,
+            routed_by=action.routed_by,
         )
 
     return None
@@ -194,6 +234,23 @@ async def answer_project_chat_direct(
     responder: DirectResponder | None = None,
 ) -> str:
     """Generate a direct Project Chat response for non-workflow routes."""
+    action = action_from_chat_decision(
+        message=message,
+        intent=decision.intent,
+        should_run_workflow=decision.should_run_workflow,
+        confidence=decision.confidence,
+        reason=decision.reason,
+        routed_by=decision.routed_by,
+        project_path=context.project_path,
+    )
+    action_response = execute_read_only_project_action(
+        action,
+        message,
+        context.project_path,
+    )
+    if action_response is not None:
+        return action_response
+
     if decision.response.strip():
         return decision.response.strip()
 
@@ -223,6 +280,35 @@ def compose_project_chat_direct_response(
             "Sohbet, durum ve yardım mesajlarını burada yanıtlarım; net analiz "
             "veya kod/değişiklik görevi verdiğinde ajan akışını başlatırım."
         )
+
+    if decision.intent == "file_inspection":
+        return "Hangi dosyayı okumamı istediğini belirtir misin?"
+
+    if decision.intent == "path_info":
+        action = action_from_chat_decision(
+            message="",
+            intent=decision.intent,
+            should_run_workflow=False,
+            confidence=decision.confidence,
+            reason=decision.reason,
+            routed_by=decision.routed_by,
+            project_path=context.project_path,
+        )
+        response = execute_read_only_project_action(action, "", context.project_path)
+        return response or "Hangi dosyanın yolunu istediğini belirtir misin?"
+
+    if decision.intent == "folder_listing":
+        action = action_from_chat_decision(
+            message="",
+            intent=decision.intent,
+            should_run_workflow=False,
+            confidence=decision.confidence,
+            reason=decision.reason,
+            routed_by=decision.routed_by,
+            project_path=context.project_path,
+        )
+        response = execute_read_only_project_action(action, "", context.project_path)
+        return response or "Klasör içeriğini okuyamadım."
 
     if decision.intent == "help":
         return (
@@ -310,11 +396,19 @@ async def _model_project_chat_responder(
 
 
 def _clean(message: str) -> str:
-    return " ".join(message.casefold().strip().split())
+    return normalize_project_message(message)
 
 
 def _direct(
-    intent: Literal["conversation", "help", "status", "clarify"],
+    intent: Literal[
+        "conversation",
+        "file_inspection",
+        "folder_listing",
+        "help",
+        "path_info",
+        "status",
+        "clarify",
+    ],
     reason: str,
     *,
     confidence: float = 1.0,

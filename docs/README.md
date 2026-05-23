@@ -29,7 +29,8 @@ docs/
 ├── frontend/              # Static web and UI quality guidance
 │   ├── html-css-standards.md
 │   ├── static-site-quality.md
-│   └── static-ui-quality.md
+│   ├── static-ui-quality.md
+│   └── supply-chain-security.md
 ├── security/              # Security guidelines
 │   └── security-guidelines.md
 ├── patterns/              # Design patterns
@@ -52,7 +53,7 @@ docs/
 | **Reviewer** | review-checklist.md, common-issues.md, python-style-guide.md, security-guidelines.md |
 | **QA** | pytest-patterns.md, test-design.md |
 | **Project Mode** | project-review-checklist.md, advisory-output.md, clean-architecture.md, overengineering-guards.md, file-output-rules.md |
-| **Static Web** | html-css-standards.md, static-site-quality.md, static-ui-quality.md |
+| **Static Web / UI** | html-css-standards.md, static-site-quality.md, static-ui-quality.md, supply-chain-security.md |
 
 ## RAG Optimization Notes
 

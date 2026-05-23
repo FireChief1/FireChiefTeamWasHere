@@ -307,9 +307,9 @@ Each edge case lists the scenario, its impact, the resolution built into the arc
 
 **Impact:** IMPORTANT — the workflow runs on nothing.
 
-**Resolution (HARDENED):** Input is validated at the UI boundary before the workflow starts. Empty or whitespace-only input is rejected with an inline error message; the workflow is not invoked. In Project Mode, non-empty chat first passes through the Project Chat Router; direct conversation/help/status/clarify routes are answered without starting Project Intake, Developer, Reviewer, QA, file writes, commits, or pushes.
+**Resolution (HARDENED):** Input is validated at the UI boundary before the workflow starts. Empty or whitespace-only input is rejected with an inline error message; the workflow is not invoked. In Project Mode, non-empty chat first passes through the Project Chat Router and Project Action Router. Direct conversation, help, status, path-info, folder-listing, file-inspection, and clarify routes are answered without starting Project Intake, Developer, Reviewer, QA, file writes, commits, or pushes.
 
-**Implemented in:** `ui/streamlit_app.py`, `graph/project_chat_intent.py`, `agents/project_chat_router.py`, `agents/project_chat_responder.py`.
+**Implemented in:** `ui/streamlit_app.py`, `api/project_service.py`, `graph/project_chat_intent.py`, `graph/project_actions.py`, `agents/project_chat_router.py`, `agents/project_chat_responder.py`.
 
 ### EC-29: UI disconnects mid-task
 
@@ -320,6 +320,41 @@ Each edge case lists the scenario, its impact, the resolution built into the arc
 **Resolution (PLANNED):** The current single-user demo does not add explicit disconnect recovery beyond standard Streamlit behavior. A production version should persist in-flight run state and allow reconnect/resume.
 
 **Implemented in:** Not implemented beyond standard Streamlit behavior.
+
+### EC-30: Frontend supply-chain drift
+
+**Scenario:** The React migration pulls in broad npm dependency trees, floating
+version ranges, or lifecycle install scripts.
+
+**Impact:** CRITICAL — a compromised package or transitive dependency could run
+during install, leak local credentials, or make the UI build non-reproducible.
+
+**Resolution (HARDENED):** The first React migration uses a minimal
+exact-pinned package set, commits `package-lock.json`, keeps install scripts
+disabled in `frontend/.npmrc`, and documents required audit/signature/build
+checks.
+
+**Implemented in:** `frontend/package.json`, `frontend/.npmrc`,
+`docs/frontend/supply-chain-security.md`.
+
+### EC-31: Project Chat read-only action escapes project root
+
+**Scenario:** The user asks the assistant to read a file using a relative path
+such as `../secret.txt`, a symlink target outside the selected project, an
+unsupported binary type, or a very large file.
+
+**Impact:** CRITICAL — a convenient chat file-inspection feature could expose
+data outside the selected project or overload the local process.
+
+**Resolution (HARDENED):** Project Action Router converts file/folder requests
+into a concrete action schema, then dispatches to a registered action handler.
+Handlers validate read-only targets against the resolved selected project root
+before execution. `path_info` returns project-relative and absolute paths
+without reading file contents. `read_file` only allows a small text-oriented
+extension set and blocks files above the configured size limit. Blocked actions
+return a user-facing safety message and do not enter the LangGraph workflow.
+
+**Implemented in:** `graph/project_actions.py`, `api/project_service.py`.
 
 ---
 
@@ -355,6 +390,8 @@ Each edge case lists the scenario, its impact, the resolution built into the arc
 | EC-27 | IMPORTANT | HANDLED | Embedding failures degrade to empty RAG |
 | EC-28 | IMPORTANT | HARDENED | UI input validation + Project Chat routing gate |
 | EC-29 | MINOR | PLANNED | Explicit reconnect/resume support |
+| EC-30 | CRITICAL | HARDENED | Exact pins, lockfile, ignore-scripts, audit/signature checks |
+| EC-31 | CRITICAL | HARDENED | Project Action path validation, extension allowlist, read-size limit |
 
 Statuses reflect the current repository implementation. Planned items are
 kept in the register so they remain visible as future work rather than being

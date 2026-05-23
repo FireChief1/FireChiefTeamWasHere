@@ -25,6 +25,74 @@ def test_policy_router_handles_only_empty_messages():
 
 
 @pytest.mark.parametrize(
+    "message",
+    [
+        "bu klasörde ne dosyalar var",
+        "bu klaösrde ne dosyaar var",
+        "list files in this folder",
+    ],
+)
+def test_policy_router_keeps_folder_listing_out_of_workflow(message: str):
+    decision = deterministic_project_chat_decision(message)
+
+    assert decision is not None
+    assert decision.intent == "folder_listing"
+    assert decision.should_run_workflow is False
+    assert decision.routed_by == "policy"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "HTML dosyasını açabilir misin?",
+        "Bu klasör içindeki HTML dosyası konusu nedir",
+        "içeriği bana anlat",
+    ],
+)
+def test_policy_router_keeps_file_inspection_out_of_workflow(
+    tmp_path,
+    message: str,
+):
+    (tmp_path / "index.html").write_text(
+        "<title>Exploring Space</title><h1>Welcome to Space</h1>",
+        encoding="utf-8",
+    )
+
+    decision = deterministic_project_chat_decision(
+        message,
+        ProjectChatContext(project_path=str(tmp_path)),
+    )
+
+    assert decision is not None
+    assert decision.intent == "file_inspection"
+    assert decision.should_run_workflow is False
+    assert decision.routed_by == "policy"
+
+
+def test_policy_router_keeps_path_questions_out_of_file_inspection(tmp_path):
+    (tmp_path / "index.html").write_text(
+        "<title>Exploring Space</title><h1>Welcome to Space</h1>",
+        encoding="utf-8",
+    )
+
+    decision = deterministic_project_chat_decision(
+        "dosya yolu nedir",
+        ProjectChatContext(project_path=str(tmp_path)),
+    )
+
+    assert decision is not None
+    assert decision.intent == "path_info"
+    assert decision.should_run_workflow is False
+    assert decision.routed_by == "policy"
+
+
+def test_policy_router_does_not_block_file_change_tasks():
+    decision = deterministic_project_chat_decision("README dosyasını güncelle")
+
+    assert decision is None
+
+
+@pytest.mark.parametrize(
     "message,intent,should_run",
     [
         ("sen kimsin", "conversation", False),
@@ -174,6 +242,84 @@ async def test_project_chat_direct_response_uses_responder_agent():
     )
 
     assert "İyiyim" in response
+
+
+async def test_project_chat_folder_listing_response_uses_project_path(tmp_path):
+    (tmp_path / "index.html").write_text("<h1>Hi</h1>", encoding="utf-8")
+    (tmp_path / "assets").mkdir()
+
+    response = await answer_project_chat_direct(
+        "bu klasörde ne dosyalar var",
+        ProjectChatDecision(
+            intent="folder_listing",
+            should_run_workflow=False,
+            confidence=0.98,
+            reason="Read-only listing.",
+        ),
+        ProjectChatContext(project_name="demo", project_path=str(tmp_path)),
+        responder=pytest.fail,
+    )
+
+    assert "index.html" in response
+    assert "assets/" in response
+    assert "Toplam: 2" in response
+
+
+async def test_project_chat_file_inspection_summarizes_html_file(tmp_path):
+    (tmp_path / "index.html").write_text(
+        """
+        <!doctype html>
+        <html>
+          <head><title>Exploring Space</title></head>
+          <body>
+            <h1>Welcome to the World of Space</h1>
+            <p>Space is vast and full of wonder.</p>
+            <ul><li>Astronomy</li><li>Planets</li></ul>
+          </body>
+        </html>
+        """,
+        encoding="utf-8",
+    )
+
+    response = await answer_project_chat_direct(
+        "HTML dosyasının konusu nedir",
+        ProjectChatDecision(
+            intent="file_inspection",
+            should_run_workflow=False,
+            confidence=0.98,
+            reason="Read-only file inspection.",
+        ),
+        ProjectChatContext(project_name="demo", project_path=str(tmp_path)),
+        responder=pytest.fail,
+    )
+
+    assert "index.html" in response
+    assert "Exploring Space" in response
+    assert "Welcome to the World of Space" in response
+    assert "Astronomy" in response
+
+
+async def test_project_chat_path_info_returns_path_without_file_summary(tmp_path):
+    (tmp_path / "index.html").write_text(
+        "<title>Exploring Space</title><h1>Welcome to Space</h1>",
+        encoding="utf-8",
+    )
+
+    response = await answer_project_chat_direct(
+        "dosya yolu nedir",
+        ProjectChatDecision(
+            intent="path_info",
+            should_run_workflow=False,
+            confidence=0.98,
+            reason="Read-only path request.",
+        ),
+        ProjectChatContext(project_name="demo", project_path=str(tmp_path)),
+        responder=pytest.fail,
+    )
+
+    assert str(tmp_path / "index.html") in response
+    assert "Proje içi yol: `index.html`" in response
+    assert "Exploring Space" not in response
 
 
 async def test_project_chat_direct_response_falls_back_when_responder_fails():
