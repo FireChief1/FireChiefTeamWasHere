@@ -25,6 +25,12 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from app.config import PROJECT_ROOT
+from app.graph.project_chat_intent import (
+    ProjectChatContext,
+    answer_project_chat_direct,
+    format_project_chat_route,
+    route_project_chat_intent,
+)
 from app.graph.project_output import apply_project_files
 from app.graph.state import AgentState
 from app.graph.task_profile import classify_task_profile
@@ -53,8 +59,7 @@ DEFAULT_TASK = (
     "Withdraw must reject amounts larger than the balance."
 )
 DEFAULT_PROJECT_TASK = (
-    "Analyze this project in Project Mode and propose the next safe "
-    "project-level improvement."
+    "Projeye mesaj yaz; analiz veya kod görevi verirsen ajan akışı başlar."
 )
 RunMode = Literal["generate", "project"]
 
@@ -1139,8 +1144,8 @@ def render_project_conversation(
     events = _project_chat_events(timeline)
     if not events:
         st.caption(
-            "Bu projede henüz sohbet yok. Aşağıdan bir mesaj gönder; ajanlar "
-            "arka planda çalışıp sonucu burada tek cevap olarak dönecek."
+            "Bu projede henüz sohbet yok. Mesaj sohbet/durum ise doğrudan "
+            "yanıtlanır; analiz veya kod görevi ise ajan akışı başlar."
         )
         return
 
@@ -1200,6 +1205,55 @@ def compose_project_assistant_response(state: dict[str, Any]) -> str:
         lines.append(f"Hata detayı teknik akışta duruyor: `{state['node_error']}`")
 
     return "\n\n".join(lines)
+
+
+def project_chat_context(
+    project: ProjectRecord | None,
+    checkpoints: list[ProjectCheckpoint],
+    timeline: list[ProjectTimelineEvent],
+    project_path: str,
+) -> ProjectChatContext:
+    """Build the small context object used by the Project Chat router."""
+    fallback_name = Path(project_path).name if project_path else "Proje"
+    return ProjectChatContext(
+        project_name=project["name"] if project is not None else fallback_name,
+        project_path=project_path,
+        last_task=project["last_task"] if project is not None else "",
+        last_status=project["last_status"] if project is not None else "",
+        stack=tuple(project["project_stack"]) if project is not None else (),
+        checkpoint_count=len(checkpoints),
+        timeline_count=len(timeline),
+    )
+
+
+def refresh_project_panels(
+    project_path: str,
+    conversation_slot: Any | None,
+    summary_slot: Any | None,
+    history_slot: Any | None,
+) -> None:
+    """Refresh Project Mode panels after a chat or workflow write."""
+    _clear_project_registry_cache()
+    fresh_project_record = load_project(project_path)
+    fresh_project_checkpoints = load_project_checkpoints(project_path, 5)
+    fresh_project_history = load_project_checkpoints(project_path, 20)
+    fresh_project_timeline = load_project_timeline(project_path, 30)
+    if conversation_slot is not None:
+        conversation_slot.empty()
+        with conversation_slot.container():
+            render_project_conversation(fresh_project_record, fresh_project_timeline)
+    if summary_slot is not None:
+        summary_slot.empty()
+        with summary_slot.container():
+            render_project_memory_summary(
+                fresh_project_record,
+                fresh_project_checkpoints,
+                fresh_project_timeline,
+            )
+    if history_slot is not None:
+        history_slot.empty()
+        with history_slot.container():
+            render_project_history(fresh_project_record, fresh_project_history)
 
 
 async def run_workflow(
@@ -1412,7 +1466,8 @@ else:
     go = st.button("▶ Çalıştır", type="primary")
 
 if go:
-    if not task_input.strip():
+    clean_task = task_input.strip()
+    if not clean_task:
         st.error("Lütfen bir görev girin.")
     else:
         if cfg_mode == "project" and cfg_project_conversation_slot is not None:
@@ -1420,64 +1475,123 @@ if go:
             with cfg_project_conversation_slot.container():
                 render_project_conversation(cfg_project_record, cfg_project_timeline)
                 with st.chat_message("user"):
-                    st.markdown(task_input.strip())
-        status_ph = st.empty()
-        degraded_ph = st.empty()
+                    st.markdown(clean_task)
+
+        should_run_workflow = True
         if cfg_mode == "project":
-            technical_panel = st.expander("Teknik akış detayları", expanded=False)
-            with technical_panel:
+            chat_context = project_chat_context(
+                cfg_project_record,
+                cfg_project_checkpoints,
+                cfg_project_timeline,
+                cfg_project_path,
+            )
+            with st.spinner("Mesaj niyeti okunuyor..."):
+                chat_decision = asyncio.run(
+                    route_project_chat_intent(clean_task, chat_context)
+                )
+            should_run_workflow = chat_decision.should_run_workflow
+            if not should_run_workflow:
+                route_label = format_project_chat_route(chat_decision)
+                with st.spinner("Yanıt hazırlanıyor..."):
+                    assistant_response = asyncio.run(
+                        answer_project_chat_direct(
+                            clean_task,
+                            chat_decision,
+                            chat_context,
+                        )
+                    )
+                st.caption(f"Yönlendirme: `{route_label}`.")
+                task_id = uuid.uuid4().hex[:8]
+                record_project_message(
+                    project_path=cfg_project_path,
+                    role="user",
+                    body=clean_task,
+                    task_id=task_id,
+                    metadata={
+                        "intent": chat_decision.intent,
+                        "router_source": chat_decision.routed_by,
+                        "router_confidence": chat_decision.confidence,
+                        "routed_direct": True,
+                    },
+                )
+                record_project_message(
+                    project_path=cfg_project_path,
+                    role="assistant",
+                    body=assistant_response,
+                    task_id=task_id,
+                    metadata={
+                        "intent": chat_decision.intent,
+                        "router_source": chat_decision.routed_by,
+                        "router_confidence": chat_decision.confidence,
+                        "routed_direct": True,
+                        "router_reason": chat_decision.reason,
+                    },
+                )
+                if cfg_project_record is not None:
+                    refresh_project_panels(
+                        cfg_project_path,
+                        cfg_project_conversation_slot,
+                        cfg_project_summary_slot,
+                        cfg_project_history_slot,
+                    )
+                elif cfg_project_conversation_slot is not None:
+                    cfg_project_conversation_slot.empty()
+                    with cfg_project_conversation_slot.container():
+                        render_project_conversation(
+                            cfg_project_record,
+                            cfg_project_timeline,
+                        )
+                        with st.chat_message("user"):
+                            st.markdown(clean_task)
+                        with st.chat_message("assistant"):
+                            st.markdown(assistant_response)
+                st.info(
+                    "Sohbet mesajı olarak yanıtlandı; teknik ajan akışı "
+                    "başlatılmadı."
+                )
+            else:
+                st.caption(
+                    f"Yönlendirme: `{format_project_chat_route(chat_decision)}`; "
+                    "teknik ajan akışı başlatılıyor."
+                )
+
+        if should_run_workflow:
+            status_ph = st.empty()
+            degraded_ph = st.empty()
+            if cfg_mode == "project":
+                technical_panel = st.expander("Teknik akış detayları", expanded=False)
+                with technical_panel:
+                    tracker_ph = st.empty()
+                    detail_box = st.container()
+                    st.divider()
+                    result_ph = st.container()
+            else:
                 tracker_ph = st.empty()
+                st.markdown("### Akış Detayları")
                 detail_box = st.container()
                 st.divider()
                 result_ph = st.container()
-        else:
-            tracker_ph = st.empty()
-            st.markdown("### Akış Detayları")
-            detail_box = st.container()
-            st.divider()
-            result_ph = st.container()
-        asyncio.run(
-            run_workflow(
-                task_input.strip(),
-                cfg_mode,
-                cfg_project_path,
-                cfg_project_memory,
-                cfg_project_apply_changes,
-                cfg_max_iterations,
-                cfg_use_rag,
-                status_ph,
-                degraded_ph,
-                tracker_ph,
-                detail_box,
-                result_ph,
+            asyncio.run(
+                run_workflow(
+                    clean_task,
+                    cfg_mode,
+                    cfg_project_path,
+                    cfg_project_memory,
+                    cfg_project_apply_changes,
+                    cfg_max_iterations,
+                    cfg_use_rag,
+                    status_ph,
+                    degraded_ph,
+                    tracker_ph,
+                    detail_box,
+                    result_ph,
+                )
             )
-        )
-        if cfg_mode == "project":
-            _clear_project_registry_cache()
-            fresh_project_record = load_project(cfg_project_path)
-            fresh_project_checkpoints = load_project_checkpoints(cfg_project_path, 5)
-            fresh_project_history = load_project_checkpoints(cfg_project_path, 20)
-            fresh_project_timeline = load_project_timeline(cfg_project_path, 30)
-            if cfg_project_conversation_slot is not None:
-                cfg_project_conversation_slot.empty()
-                with cfg_project_conversation_slot.container():
-                    render_project_conversation(
-                        fresh_project_record,
-                        fresh_project_timeline,
-                    )
-            if cfg_project_summary_slot is not None:
-                cfg_project_summary_slot.empty()
-                with cfg_project_summary_slot.container():
-                    render_project_memory_summary(
-                        fresh_project_record,
-                        fresh_project_checkpoints,
-                        fresh_project_timeline,
-                    )
-            if cfg_project_history_slot is not None:
-                cfg_project_history_slot.empty()
-                with cfg_project_history_slot.container():
-                    render_project_history(
-                        fresh_project_record,
-                        fresh_project_history,
-                    )
-        render_pending_project_apply(st.container())
+            if cfg_mode == "project":
+                refresh_project_panels(
+                    cfg_project_path,
+                    cfg_project_conversation_slot,
+                    cfg_project_summary_slot,
+                    cfg_project_history_slot,
+                )
+            render_pending_project_apply(st.container())

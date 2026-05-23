@@ -83,6 +83,8 @@ The orchestrator software is organized in five layers. Each layer calls only the
 
 | Component | Type | Responsibility |
 |-----------|------|----------------|
+| Project Chat Router | LLM router + policy | Decide whether a Project Mode chat message should be answered directly or sent into the workflow |
+| Project Chat Responder | LLM agent | Answer direct chat/help/status/clarify messages without starting Developer/QA |
 | Project Intake | Deterministic node | Read-only repository scan for Project Mode |
 | Project Brief | Deterministic node | Detect stack, entrypoints, test commands, and risks |
 | Project Registry | Service | Persist projects and checkpoints in Postgres |
@@ -102,6 +104,11 @@ The Supervisor and Integrator are deterministic — they make no LLM judgment ca
 ## Workflow Graph (Revised with Resilience)
 
 ```
+Project Mode chat first passes through the Project Chat Router. The router
+uses the local model as the primary semantic classifier, then a deterministic
+policy layer normalizes workflow flags and blocks low-confidence routes. Only
+`project_analysis` and `implementation` intents enter the graph below.
+
                     ┌─────────────┐
                     │   START     │
                     └──────┬──────┘
@@ -180,6 +187,22 @@ Every node function is wrapped by the `@node_error_boundary` decorator. It catch
 ### Capability Routing with Degraded Mode
 
 `LLMPool` routes by capability (CODER, REASONER, FALLBACK), not by round-robin. Each node has a health state and a circuit breaker. If a configured specialized node is unavailable and a fallback node is usable, requests route to fallback. The Streamlit UI records and displays degraded mode when the current pool cannot serve every specialized capability. (EC-01, EC-02, EC-03)
+
+### Project Chat Intent Routing
+
+The Project Mode UI does not treat every message as a code task. The Project
+Chat Router runs before LangGraph and returns one of six intents:
+`conversation`, `help`, `status`, `project_analysis`, `implementation`, or
+`clarify`. Natural-language intent classification is model-first: casual
+Turkish/English, typos, and project-analysis phrasing are interpreted by the
+local REASONER model through structured output rather than by a large phrase
+table. A deterministic policy layer still handles non-semantic safety rules:
+empty messages, invalid workflow flags, model failures, and confidence below
+the product threshold. Direct routes are then answered by the Project Chat
+Responder agent, which can talk about known project status/context but cannot
+start Developer, Reviewer, QA, file writes, commits, or pushes. The UI exposes
+the final route as compact metadata such as
+`model: project_analysis, confidence: 0.84`.
 
 ### Warm-Up Phase
 

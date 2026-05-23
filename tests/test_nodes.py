@@ -6,8 +6,10 @@ from contextlib import asynccontextmanager
 
 import pytest
 
-import app.graph.nodes as graph_nodes
+import app.graph.analyst_step as analyst_step
+import app.graph.developer_step as developer_step
 import app.graph.project_intake as project_intake
+import app.graph.rag_step as rag_step
 from app.agents.analyst import PlanOutput
 from app.agents.developer import CodeFile, CodeOutput
 from app.agents.project_context import project_context_section
@@ -517,6 +519,13 @@ async def test_task_classifier_node_selects_project_for_learn_project():
     assert update["task_profile"] == "project"
 
 
+async def test_task_classifier_node_keeps_ambiguous_project_chat_advisory():
+    update = await task_classifier_node({"task": "sen kimsin", "mode": "project"})
+
+    assert update["task_profile"] == "project"
+    assert "ambiguous chat" in update["task_profile_reason"]
+
+
 async def test_task_classifier_node_keeps_broad_project_fix_advisory():
     update = await task_classifier_node(
         {"task": "Projeyi düzelt", "mode": "project"}
@@ -545,10 +554,10 @@ async def test_developer_node_uses_static_web_agent_for_static_profile(monkeypat
             summary="Created a cars page.",
         )
 
-    monkeypatch.setattr(graph_nodes, "get_pool", lambda: object())
-    monkeypatch.setattr(graph_nodes.DeveloperAgent, "run", fail_python_developer)
+    monkeypatch.setattr(developer_step, "get_pool", lambda: object())
+    monkeypatch.setattr(developer_step.DeveloperAgent, "run", fail_python_developer)
     monkeypatch.setattr(
-        graph_nodes.StaticWebDeveloperAgent,
+        developer_step.StaticWebDeveloperAgent,
         "run",
         static_developer,
     )
@@ -593,9 +602,9 @@ async def test_developer_node_uses_project_advisor_for_project_profile(monkeypat
             summary="Produced a grounded project proposal.",
         )
 
-    monkeypatch.setattr(graph_nodes, "get_pool", lambda: object())
-    monkeypatch.setattr(graph_nodes.DeveloperAgent, "run", fail_python_developer)
-    monkeypatch.setattr(graph_nodes.ProjectAdvisorAgent, "run", project_advisor)
+    monkeypatch.setattr(developer_step, "get_pool", lambda: object())
+    monkeypatch.setattr(developer_step.DeveloperAgent, "run", fail_python_developer)
+    monkeypatch.setattr(developer_step.ProjectAdvisorAgent, "run", project_advisor)
 
     update = await developer_node(
         {
@@ -622,8 +631,8 @@ async def test_developer_node_uses_project_advisory_fallback(monkeypatch):
             summary="Returned the wrong artifact.",
         )
 
-    monkeypatch.setattr(graph_nodes, "get_pool", lambda: object())
-    monkeypatch.setattr(graph_nodes.ProjectAdvisorAgent, "run", invalid_project_advisor)
+    monkeypatch.setattr(developer_step, "get_pool", lambda: object())
+    monkeypatch.setattr(developer_step.ProjectAdvisorAgent, "run", invalid_project_advisor)
 
     update = await developer_node(
         {
@@ -673,10 +682,10 @@ async def test_developer_node_uses_docs_advisor_for_docs_profile(monkeypatch):
             summary="Updated README guidance.",
         )
 
-    monkeypatch.setattr(graph_nodes, "get_pool", lambda: object())
-    monkeypatch.setattr(graph_nodes.DeveloperAgent, "run", fail_python_developer)
-    monkeypatch.setattr(graph_nodes.ProjectAdvisorAgent, "run", fail_project_advisor)
-    monkeypatch.setattr(graph_nodes.DocsAdvisorAgent, "run", docs_advisor)
+    monkeypatch.setattr(developer_step, "get_pool", lambda: object())
+    monkeypatch.setattr(developer_step.DeveloperAgent, "run", fail_python_developer)
+    monkeypatch.setattr(developer_step.ProjectAdvisorAgent, "run", fail_project_advisor)
+    monkeypatch.setattr(developer_step.DocsAdvisorAgent, "run", docs_advisor)
 
     update = await developer_node(
         {
@@ -812,8 +821,8 @@ async def test_analyst_node_uses_fallback_when_plan_stays_empty(monkeypatch):
     async def empty_plan(self, state):
         return PlanOutput(steps=["", "   "])
 
-    monkeypatch.setattr(graph_nodes, "get_pool", lambda: object())
-    monkeypatch.setattr(graph_nodes.AnalystAgent, "run", empty_plan)
+    monkeypatch.setattr(analyst_step, "get_pool", lambda: object())
+    monkeypatch.setattr(analyst_step.AnalystAgent, "run", empty_plan)
 
     update = await analyst_node({"task": "x"})
 
@@ -835,7 +844,7 @@ async def test_rag_node_reports_unavailable_status(monkeypatch):
             message="RAG retrieval unavailable: boom",
         )
 
-    monkeypatch.setattr(graph_nodes, "retrieve_with_status", unavailable)
+    monkeypatch.setattr(rag_step, "retrieve_with_status", unavailable)
 
     update = await rag_node({"task": "x"})
 
@@ -852,7 +861,7 @@ async def test_rag_node_reports_retrieved_status(monkeypatch):
             message="Retrieved 1 RAG chunk(s).",
         )
 
-    monkeypatch.setattr(graph_nodes, "retrieve_with_status", retrieved)
+    monkeypatch.setattr(rag_step, "retrieve_with_status", retrieved)
 
     update = await rag_node({"task": "x"})
 

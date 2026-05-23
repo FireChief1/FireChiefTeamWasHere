@@ -11,7 +11,10 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-import app.graph.nodes as graph_nodes
+import app.graph.analyst_step as analyst_step
+import app.graph.developer_step as developer_step
+import app.graph.qa_step as qa_step
+import app.graph.reviewer_step as reviewer_step
 from app.agents.analyst import PlanOutput
 from app.agents.developer import CodeFile, CodeOutput
 from app.agents.qa import QAOutput
@@ -42,9 +45,12 @@ def _patch_common_agents(monkeypatch: Any) -> None:
     async def reviewer_run(self: object, state: AgentState) -> ReviewOutput:
         return ReviewOutput(findings=[])
 
-    monkeypatch.setattr(graph_nodes, "get_pool", lambda: object())
-    monkeypatch.setattr(graph_nodes.AnalystAgent, "run", analyst_run)
-    monkeypatch.setattr(graph_nodes.ReviewerAgent, "run", reviewer_run)
+    monkeypatch.setattr(analyst_step, "get_pool", lambda: object())
+    monkeypatch.setattr(developer_step, "get_pool", lambda: object())
+    monkeypatch.setattr(qa_step, "get_pool", lambda: object())
+    monkeypatch.setattr(reviewer_step, "get_pool", lambda: object())
+    monkeypatch.setattr(analyst_step.AnalystAgent, "run", analyst_run)
+    monkeypatch.setattr(reviewer_step.ReviewerAgent, "run", reviewer_run)
 
 
 def _patch_valid_developer(monkeypatch: Any) -> None:
@@ -63,7 +69,7 @@ def _patch_valid_developer(monkeypatch: Any) -> None:
             summary="Built an add function.",
         )
 
-    monkeypatch.setattr(graph_nodes.DeveloperAgent, "run", developer_run)
+    monkeypatch.setattr(developer_step.DeveloperAgent, "run", developer_run)
 
 
 def _patch_qa(monkeypatch: Any, *, test_code: str) -> None:
@@ -77,7 +83,7 @@ def _patch_qa(monkeypatch: Any, *, test_code: str) -> None:
             summary="Covers addition.",
         )
 
-    monkeypatch.setattr(graph_nodes.QAAgent, "run", qa_run)
+    monkeypatch.setattr(qa_step.QAAgent, "run", qa_run)
 
 
 def _patch_workspace_pytest(monkeypatch: Any, output: str) -> None:
@@ -94,7 +100,7 @@ def _patch_workspace_pytest(monkeypatch: Any, output: str) -> None:
     async def fake_workspace_tools() -> AsyncIterator[FakeTools]:
         yield FakeTools()
 
-    monkeypatch.setattr(graph_nodes, "workspace_tools", fake_workspace_tools)
+    monkeypatch.setattr(qa_step, "workspace_tools", fake_workspace_tools)
 
 
 async def test_workflow_fails_when_developer_returns_no_files(monkeypatch):
@@ -108,7 +114,7 @@ async def test_workflow_fails_when_developer_returns_no_files(monkeypatch):
             summary="No files.",
         )
 
-    monkeypatch.setattr(graph_nodes.DeveloperAgent, "run", developer_run)
+    monkeypatch.setattr(developer_step.DeveloperAgent, "run", developer_run)
 
     result = await build_workflow().ainvoke(
         _initial_state(), config={"recursion_limit": 20}

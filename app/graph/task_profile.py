@@ -111,4 +111,12 @@ def classify_task_profile(state: AgentState) -> tuple[TaskProfile, str]:
         return "docs", "Task is primarily documentation-oriented."
     if is_project_mode and has_project_signal:
         return "project", "Project Mode task targets existing project architecture or workflow."
+    if is_project_mode and not has_implementation_signal:
+        return (
+            "project",
+            (
+                "Project Mode fallback keeps ambiguous chat or advisory text "
+                "out of the Python code-generation profile."
+            ),
+        )
     return "python", "Default profile for code-generation tasks is Python."

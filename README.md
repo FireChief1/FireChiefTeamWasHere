@@ -13,6 +13,8 @@ Agents collaborate under a LangGraph orchestrator:
 
 | Agent | Role |
 |-------|------|
+| Project Chat Router | Uses the local model plus policy checks to decide chat vs workflow |
+| Project Chat Responder | Answers direct conversation/status/help messages without Developer/QA |
 | Project Intake | Scans the selected project folder in Project Mode |
 | Project Brief | Detects stack, entrypoints, test commands, and risks |
 | Task Classifier | Selects the implementation profile for the task |
@@ -35,10 +37,16 @@ sidebar can show recent projects and reopen one with its latest brief,
 checkpoint history, timeline events, and saved project memory. Project Mode
 uses a chat-first main panel: the user sends a project message, the agent
 workflow runs in the background, and the final assistant response is saved back
-to the project timeline. Technical Project/Developer/QA events remain available
-in a collapsed details panel. The sidebar can rename or remove registry entries
-without touching files on disk. Registry reads use a short Streamlit cache so
-routine rerenders do not repeatedly hit Postgres.
+to the project timeline. Before the workflow starts, a Project Chat Intent
+Router asks the local model for a structured intent decision, then a small
+deterministic policy layer normalizes the result and blocks low-confidence
+routes. Casual questions, status checks, and help messages are answered by a
+separate Project Chat Responder without Project Intake, RAG, Developer,
+Reviewer, or QA. The UI shows compact routing metadata such as
+`model: project_analysis, confidence: 0.84`. Technical Project/Developer/QA
+events remain available in a collapsed details panel. The sidebar can rename
+or remove registry entries without touching files on disk. Registry reads use
+a short Streamlit cache so routine rerenders do not repeatedly hit Postgres.
 Successful Project Mode runs default to a preview-only Integrator step that
 shows a unified diff and the files that would be written. Generated files are
 applied only when the user clicks the Project Mode apply button, and that apply
