@@ -11,6 +11,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from app.agents.base import BaseAgent
+from app.agents.project_context import project_context_section
 from app.graph.state import AgentState, FeedbackItem
 from app.llm.pool import Capability
 
@@ -55,6 +56,9 @@ class ReviewerAgent(BaseAgent[ReviewOutput]):
 
     def build_user_message(self, state: AgentState) -> str:
         parts = [f"TASK:\n{state['task']}"]
+        project_context = project_context_section(state)
+        if project_context:
+            parts.append(project_context)
 
         plan = state.get("plan") or []
         if plan:

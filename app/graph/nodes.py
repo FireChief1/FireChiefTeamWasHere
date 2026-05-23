@@ -16,16 +16,48 @@ from loguru import logger
 
 from app.agents.analyst import AnalystAgent
 from app.agents.developer import DeveloperAgent
+from app.agents.docs_advisor import DocsAdvisorAgent, DocsAdvisorReviewerAgent
+from app.agents.project_advisor import ProjectAdvisorAgent, ProjectAdvisorReviewerAgent
 from app.agents.qa import QAAgent
 from app.agents.reviewer import ReviewerAgent
+from app.agents.static_web_developer import StaticWebDeveloperAgent
+from app.agents.static_web_reviewer import StaticWebReviewerAgent
 from app.config import settings
+from app.graph.advisory_qa import advisory_qa_update as _advisory_qa_update
+from app.graph.code_utils import strip_code_fences as _strip_code_fences
+from app.graph.code_validation import validate_code_files as _validate_code_files
 from app.graph.error_boundary import node_error_boundary
+from app.graph.project_brief import project_brief_node
+from app.graph.project_intake import project_intake_node
+from app.graph.pytest_utils import build_test_imports as _build_test_imports
+from app.graph.pytest_utils import parse_pytest as _parse_pytest
 from app.graph.state import AgentState, FeedbackItem, TestResults
+from app.graph.static_web_qa import static_web_qa_update as _static_web_qa_update
+from app.graph.task_profile import classify_task_profile
 from app.llm.pool import get_pool
 from app.rag.retriever import retrieve_with_status
 from app.tools.mcp_client import workspace_tools
 
 _ANALYST_FALLBACK_PLAN = ["Implement directly from the task description."]
+
+__all__ = [
+    "analyst_node",
+    "developer_node",
+    "project_brief_node",
+    "project_intake_node",
+    "qa_node",
+    "rag_node",
+    "reviewer_node",
+    "task_classifier_node",
+]
+
+
+@node_error_boundary
+async def task_classifier_node(state: AgentState) -> dict[str, Any]:
+    """Select the implementation profile used by downstream nodes."""
+    profile, reason = classify_task_profile(state)
+    logger.info(f"task profile: {profile} ({reason})")
+    return {"task_profile": profile, "task_profile_reason": reason}
 
 
 @node_error_boundary
@@ -44,7 +76,11 @@ async def rag_node(state: AgentState) -> dict[str, Any]:
             "rag_message": "RAG disabled for this run.",
             "rag_chunk_count": 0,
         }
-    retrieval = await asyncio.to_thread(retrieve_with_status, state["task"])
+    retrieval = await asyncio.to_thread(
+        retrieve_with_status,
+        state["task"],
+        profile=state.get("task_profile"),
+    )
     chunks = retrieval.chunks
     logger.info(f"RAG: retrieved {len(chunks)} chunk(s)")
     if not chunks:
@@ -92,10 +128,13 @@ async def developer_node(state: AgentState) -> dict[str, Any]:
     If the generated code is syntactically broken, the Developer is given one
     more attempt before the code flows downstream to the Reviewer and QA.
     """
-    agent = DeveloperAgent(get_pool())
+    agent = _developer_for_profile(state)
     result = await agent.run(state)
     code = {f.filename: _strip_code_fences(f.content) for f in result.files}
-    validation_error = _validate_code_files(code)
+    validation_error = _validate_code_files(
+        code,
+        profile=state.get("task_profile", "python"),
+    )
 
     if validation_error:
         logger.warning(
@@ -103,9 +142,15 @@ async def developer_node(state: AgentState) -> dict[str, Any]:
         )
         result = await agent.run(state)
         code = {f.filename: _strip_code_fences(f.content) for f in result.files}
-        validation_error = _validate_code_files(code)
+        validation_error = _validate_code_files(
+            code,
+            profile=state.get("task_profile", "python"),
+        )
 
     if validation_error:
+        if state.get("task_profile") == "project":
+            logger.warning("Project advisor fallback activated")
+            return _project_advisory_fallback_update(state, validation_error)
         logger.error(f"Developer output rejected: {validation_error}")
         return {
             "code": code,
@@ -118,34 +163,137 @@ async def developer_node(state: AgentState) -> dict[str, Any]:
 
     return {
         "code": code,
-        "dev_approach": result.approach,
+        "dev_approach": _clean_developer_approach(result.approach, result.summary),
         "dev_assumptions": result.assumptions,
     }
 
 
-def _validate_code_files(code: dict[str, str]) -> str | None:
-    """Return a validation error for Developer output, or None if valid."""
-    if not code:
-        return "Developer produced no source files."
-    for filename, content in code.items():
-        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\.py", filename):
-            return (
-                f"Developer produced unsupported filename '{filename}'. "
-                "Use a simple Python module name such as bank_account.py."
-            )
-        if not content.strip():
-            return f"Developer produced an empty file: {filename}."
-        try:
-            ast.parse(content)
-        except SyntaxError as exc:
-            return f"Developer produced invalid Python in {filename}: {exc}."
-    return None
+def _clean_developer_approach(approach: str, summary: str) -> str:
+    """Return a useful approach string even when the LLM gives a format label."""
+    cleaned = approach.strip()
+    if cleaned.casefold() in {"markdown", "md", "text", "plain text"}:
+        fallback = summary.strip()
+        return fallback or "Produced the requested output for the selected profile."
+    return cleaned
+
+
+def _project_advisory_fallback_update(
+    state: AgentState,
+    validation_error: str,
+) -> dict[str, Any]:
+    """Return a deterministic project proposal when the advisor misroutes."""
+    proposal = _project_advisory_fallback_markdown(state, validation_error)
+    return {
+        "code": {"PROJECT_PROPOSAL.md": proposal},
+        "dev_approach": (
+            "Generated a deterministic advisory proposal because the model "
+            "did not return a valid project advisory file."
+        ),
+        "dev_assumptions": [
+            "The user asked for project-level analysis or planning.",
+            "Existing project source/artifact files should not be overwritten.",
+        ],
+    }
+
+
+def _project_advisory_fallback_markdown(
+    state: AgentState,
+    validation_error: str,
+) -> str:
+    """Build a grounded PROJECT_PROPOSAL.md without asking the LLM again."""
+    task = str(state.get("task") or "Project analysis")
+    summary = str(state.get("project_summary") or "Project intake completed.")
+    relevant_files = [str(item) for item in state.get("project_relevant_files") or []]
+    risks = [str(item) for item in state.get("project_risks") or []]
+    subjects = _observed_project_subjects(state)
+
+    lines = [
+        "# Project Proposal",
+        "",
+        "## Observations",
+        f"- Requested task: {task}",
+        f"- Project intake: {summary}",
+    ]
+    if subjects:
+        lines.append("- Observed subject matter: " + ", ".join(subjects[:4]))
+    if relevant_files:
+        lines.append(
+            "- Relevant files: "
+            + ", ".join(f"`{name}`" for name in relevant_files[:8])
+        )
+
+    lines.extend(["", "## Risks"])
+    if risks:
+        lines.extend(f"- {risk}" for risk in risks[:5])
+    lines.append(
+        "- The advisor model returned an invalid advisory artifact, so this "
+        f"fallback avoided source changes. Validation detail: {validation_error}"
+    )
+
+    lines.extend(
+        [
+            "",
+            "## Recommended Next Steps",
+            "1. Keep this run advisory-only and review the current project facts.",
+            "2. Choose one concrete follow-up change before editing source files.",
+            "3. Run the detected project checks after any implementation change.",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
+def _observed_project_subjects(state: AgentState) -> list[str]:
+    """Extract visible page/document subjects from project file excerpts."""
+    subjects: list[str] = []
+    excerpts = state.get("project_file_excerpts") or []
+    for excerpt in excerpts:
+        if not isinstance(excerpt, dict):
+            continue
+        content = excerpt.get("content")
+        if not isinstance(content, str):
+            continue
+        for pattern in (
+            r"<title[^>]*>(?P<text>.*?)</title>",
+            r"<h1[^>]*>(?P<text>.*?)</h1>",
+            r"^#\s+(?P<text>.+)$",
+        ):
+            for match in re.finditer(
+                pattern,
+                content,
+                flags=re.IGNORECASE | re.MULTILINE | re.DOTALL,
+            ):
+                subject = re.sub(r"\s+", " ", match.group("text")).strip()
+                if len(subject) > 120:
+                    subject = subject[:117].rstrip() + "..."
+                if subject and subject not in subjects:
+                    subjects.append(subject)
+    return subjects
+
+
+def _developer_for_profile(state: AgentState) -> DeveloperAgent:
+    """Return the Developer persona for the current task profile."""
+    if state.get("task_profile") == "static_web":
+        return StaticWebDeveloperAgent(get_pool())
+    if state.get("task_profile") == "docs":
+        return DocsAdvisorAgent(get_pool())
+    if state.get("task_profile") == "project":
+        return ProjectAdvisorAgent(get_pool())
+    return DeveloperAgent(get_pool())
 
 
 @node_error_boundary
 async def reviewer_node(state: AgentState) -> dict[str, Any]:
     """Run the Reviewer to inspect the current code."""
-    result = await ReviewerAgent(get_pool()).run(state)
+    agent = (
+        StaticWebReviewerAgent(get_pool())
+        if state.get("task_profile") == "static_web"
+        else DocsAdvisorReviewerAgent(get_pool())
+        if state.get("task_profile") == "docs"
+        else ProjectAdvisorReviewerAgent(get_pool())
+        if state.get("task_profile") == "project"
+        else ReviewerAgent(get_pool())
+    )
+    result = await agent.run(state)
     return {"review_feedback": result.findings}
 
 
@@ -156,6 +304,11 @@ async def qa_node(state: AgentState) -> dict[str, Any]:
     A test failure is folded into ``review_feedback`` as a BLOCKER finding
     carrying the pytest output, so the Developer sees the specific failures.
     """
+    if state.get("task_profile") == "static_web":
+        return _static_web_qa_update(state)
+    if state.get("task_profile") in {"docs", "project"}:
+        return _advisory_qa_update(state)
+
     result = await QAAgent(get_pool()).run(state)
 
     task_rel = f"task-{state['task_id']}"
@@ -216,91 +369,3 @@ async def qa_node(state: AgentState) -> dict[str, Any]:
         update["review_feedback"] = feedback
 
     return update
-
-
-def _parse_pytest(output: str) -> TestResults:
-    """Parse raw pytest output into a TestResults summary."""
-    if output.startswith("TIMEOUT:"):
-        return TestResults(passed=0, failed=1, total=1, output=output)
-    if "no tests ran" in output or "collected 0 items" in output:
-        return TestResults(
-            passed=0,
-            failed=1,
-            total=1,
-            output=(output or "No tests were collected or executed.")[-2000:],
-        )
-    passed = _count(r"(\d+) passed", output)
-    failed = _count(r"(\d+) failed", output) + _count(r"(\d+) error", output)
-    total = passed + failed
-    if total == 0:
-        return TestResults(
-            passed=0,
-            failed=1,
-            total=1,
-            output=(
-                output
-                or "Pytest completed without any passing or failing tests."
-            )[-2000:],
-        )
-    return TestResults(
-        passed=passed,
-        failed=failed,
-        total=total,
-        output=output[-2000:],
-    )
-
-
-def _count(pattern: str, text: str) -> int:
-    """Extract a leading integer count from pytest summary output."""
-    match = re.search(pattern, text)
-    return int(match.group(1)) if match else 0
-
-
-def _strip_code_fences(text: str) -> str:
-    """Remove a wrapping markdown code fence from LLM output, if present.
-
-    Models sometimes wrap code in a ```python ... ``` fence even inside a
-    structured string field. Writing that verbatim to a .py file produces a
-    syntax error, so the fence is stripped before the code reaches disk.
-    """
-    stripped = text.strip()
-    if not stripped.startswith("```"):
-        return text
-    lines = stripped.splitlines()[1:]  # drop the opening fence line
-    if lines and lines[-1].strip() == "```":
-        lines = lines[:-1]  # drop the closing fence line
-    return "\n".join(lines)
-
-
-def _public_names(code: str) -> list[str]:
-    """Return the top-level class and function names defined in source code."""
-    try:
-        tree = ast.parse(code)
-    except SyntaxError:
-        return []
-    return [
-        node.name
-        for node in tree.body
-        if isinstance(node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
-        and not node.name.startswith("_")
-    ]
-
-
-def _build_test_imports(test_code: str, code: dict[str, str]) -> str:
-    """Build the import lines a generated test file is missing.
-
-    The QA agent sometimes omits imports. This derives the needed imports from
-    the actual code (via AST) and returns only the lines not already present,
-    so the generated test file is always runnable.
-    """
-    lines: list[str] = []
-    if not re.search(r"^\s*import\s+pytest\b", test_code, re.MULTILINE):
-        lines.append("import pytest")
-    for filename, content in code.items():
-        module = filename.removesuffix(".py")
-        if re.search(rf"\b(from|import)\s+{re.escape(module)}\b", test_code):
-            continue
-        names = _public_names(content)
-        if names:
-            lines.append(f"from {module} import {', '.join(names)}")
-    return "\n".join(lines) + "\n\n" if lines else ""

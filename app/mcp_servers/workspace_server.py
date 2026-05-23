@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from collections.abc import Callable
@@ -29,6 +30,30 @@ _GENERATED_REPO_IGNORES = (
     ".coverage",
     ".pytest_cache/",
 )
+_PROJECT_SKIP_DIRS = {
+    ".git",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    "__pycache__",
+    "chroma_db",
+    "htmlcov",
+    "multi_agent_code_team.egg-info",
+    "workspace",
+}
+_TEXT_SUFFIXES = {
+    ".css",
+    ".html",
+    ".js",
+    ".json",
+    ".md",
+    ".py",
+    ".toml",
+    ".txt",
+    ".yml",
+    ".yaml",
+}
 
 
 def _workspace_root() -> Path:
@@ -62,6 +87,20 @@ def _safe_path(rel_path: str) -> Path:
     return target
 
 
+def _skip_project_path(path: Path, root: Path) -> bool:
+    """Return True for hidden, generated, or cache paths in project scans."""
+    return any(
+        part.startswith(".") or part in _PROJECT_SKIP_DIRS
+        for part in path.relative_to(root).parts
+    )
+
+
+@mcp.tool()
+def root_path() -> str:
+    """Return the effective MCP workspace root."""
+    return str(_workspace_root())
+
+
 @mcp.tool()
 def write_file(rel_path: str, content: str) -> str:
     """Write text content to a file inside the workspace.
@@ -90,6 +129,120 @@ def read_file(rel_path: str) -> str:
         The file's contents.
     """
     return _safe_path(rel_path).read_text()
+
+
+@mcp.tool()
+def file_exists(rel_path: str) -> bool:
+    """Return whether a path exists inside the workspace."""
+    return _safe_path(rel_path).exists()
+
+
+@mcp.tool()
+def list_files(max_files: int = 200) -> str:
+    """List text-oriented project files inside the configured root.
+
+    Args:
+        max_files: Maximum number of paths to return.
+
+    Returns:
+        A JSON list of relative file paths.
+    """
+    root = _workspace_root()
+    files: list[str] = []
+    for path in sorted(root.rglob("*")):
+        if _skip_project_path(path, root):
+            continue
+        if path.is_file() and path.suffix in _TEXT_SUFFIXES:
+            files.append(str(path.relative_to(root)))
+        if len(files) >= max_files:
+            break
+    return json.dumps(files)
+
+
+@mcp.tool()
+def search_text(pattern: str, max_matches: int = 50) -> str:
+    """Search text-oriented files inside the configured root.
+
+    Args:
+        pattern: Regular expression pattern to search for.
+        max_matches: Maximum number of matches to return.
+
+    Returns:
+        A JSON list of matches with file, line, and text keys.
+    """
+    root = _workspace_root()
+    try:
+        regex = re.compile(pattern, re.IGNORECASE)
+    except re.error:
+        regex = re.compile(re.escape(pattern), re.IGNORECASE)
+    matches: list[dict[str, object]] = []
+    for path in sorted(root.rglob("*")):
+        if _skip_project_path(path, root):
+            continue
+        if not path.is_file() or path.suffix not in _TEXT_SUFFIXES:
+            continue
+        try:
+            lines = path.read_text(errors="ignore").splitlines()
+        except OSError:
+            continue
+        for line_no, line in enumerate(lines, 1):
+            if regex.search(line):
+                matches.append(
+                    {
+                        "file": str(path.relative_to(root)),
+                        "line": line_no,
+                        "text": line.strip()[:240],
+                    }
+                )
+                if len(matches) >= max_matches:
+                    return json.dumps(matches)
+    return json.dumps(matches)
+
+
+@mcp.tool()
+def git_status() -> str:
+    """Return `git status --short --branch` for the configured root."""
+    target = _workspace_root()
+    if not target.exists():
+        return f"path does not exist: {target}"
+    if not _is_git_repo(target):
+        return f"not a git repository: {target}"
+    result = subprocess.run(
+        ["git", "status", "--short", "--branch"],
+        cwd=target,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout + result.stderr
+
+
+@mcp.tool()
+def git_diff(max_chars: int = 6000) -> str:
+    """Return a bounded git diff for the configured root."""
+    target = _workspace_root()
+    if not target.exists():
+        return f"path does not exist: {target}"
+    if not _is_git_repo(target):
+        return f"not a git repository: {target}"
+    result = subprocess.run(
+        ["git", "diff", "--stat"],
+        cwd=target,
+        capture_output=True,
+        text=True,
+    )
+    output = result.stdout + result.stderr
+    return output[-max_chars:]
+
+
+def _is_git_repo(target: Path) -> bool:
+    """Return True if target is inside a git repository."""
+    result = subprocess.run(
+        ["git", "rev-parse", "--is-inside-work-tree"],
+        cwd=target,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0 and result.stdout.strip() == "true"
 
 
 @mcp.tool()

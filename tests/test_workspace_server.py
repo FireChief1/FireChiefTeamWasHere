@@ -5,7 +5,16 @@ from __future__ import annotations
 import json
 import subprocess
 
-from app.mcp_servers.workspace_server import _ensure_gitignore, git_commit
+from app.mcp_servers.workspace_server import (
+    _ensure_gitignore,
+    file_exists,
+    git_commit,
+    git_diff,
+    git_status,
+    list_files,
+    root_path,
+    search_text,
+)
 
 
 def test_ensure_gitignore_adds_generated_test_artifact_patterns(tmp_path):
@@ -26,6 +35,76 @@ def test_ensure_gitignore_preserves_existing_entries(tmp_path):
     _ensure_gitignore(tmp_path)
 
     assert gitignore.read_text().startswith("custom.log\n")
+
+
+def test_list_files_returns_text_files_and_skips_project_noise(tmp_path, monkeypatch):
+    monkeypatch.setenv("MCP_WORKSPACE_ROOT", str(tmp_path))
+    (tmp_path / "README.md").write_text("# Demo\n")
+    (tmp_path / "index.html").write_text("<!doctype html><html></html>\n")
+    (tmp_path / "style.css").write_text("body { color: black; }\n")
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "main.py").write_text("print('hi')\n")
+    (tmp_path / ".venv").mkdir()
+    (tmp_path / ".venv" / "ignored.py").write_text("print('ignored')\n")
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".claude" / "settings.local.json").write_text("{}\n")
+    (tmp_path / "workspace").mkdir()
+    (tmp_path / "workspace" / "task.py").write_text("print('generated')\n")
+    (tmp_path / "image.png").write_bytes(b"png")
+
+    assert json.loads(list_files()) == ["README.md", "app/main.py", "index.html", "style.css"]
+
+
+def test_root_path_reports_effective_workspace_root(tmp_path, monkeypatch):
+    monkeypatch.setenv("MCP_WORKSPACE_ROOT", str(tmp_path))
+
+    assert root_path() == str(tmp_path.resolve())
+
+
+def test_file_exists_stays_inside_workspace(tmp_path, monkeypatch):
+    monkeypatch.setenv("MCP_WORKSPACE_ROOT", str(tmp_path))
+    (tmp_path / "index.html").write_text("<!doctype html><html></html>\n")
+
+    assert file_exists("index.html") is True
+    assert file_exists("missing.html") is False
+
+
+def test_search_text_returns_bounded_matches(tmp_path, monkeypatch):
+    monkeypatch.setenv("MCP_WORKSPACE_ROOT", str(tmp_path))
+    (tmp_path / "README.md").write_text("Project mode\nProject intake\n")
+    (tmp_path / "notes.txt").write_text("Nothing here\n")
+
+    matches = json.loads(search_text("project", max_matches=1))
+
+    assert matches == [
+        {"file": "README.md", "line": 1, "text": "Project mode"}
+    ]
+
+
+def test_search_text_escapes_invalid_regex(tmp_path, monkeypatch):
+    monkeypatch.setenv("MCP_WORKSPACE_ROOT", str(tmp_path))
+    (tmp_path / "README.md").write_text("literal [ pattern\n")
+
+    matches = json.loads(search_text("[", max_matches=5))
+
+    assert matches == [
+        {"file": "README.md", "line": 1, "text": "literal [ pattern"}
+    ]
+
+
+def test_git_status_and_diff_report_missing_project_path(tmp_path, monkeypatch):
+    missing = tmp_path / "missing"
+    monkeypatch.setenv("MCP_WORKSPACE_ROOT", str(missing))
+
+    assert "path does not exist" in git_status()
+    assert "path does not exist" in git_diff()
+
+
+def test_git_status_and_diff_report_non_git_project_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("MCP_WORKSPACE_ROOT", str(tmp_path))
+
+    assert "not a git repository" in git_status()
+    assert "not a git repository" in git_diff()
 
 
 def test_git_commit_ignores_generated_test_artifacts(tmp_path, monkeypatch):

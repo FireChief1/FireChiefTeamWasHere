@@ -16,9 +16,12 @@ from app.graph.integrator import integrator_node
 from app.graph.nodes import (
     analyst_node,
     developer_node,
+    project_brief_node,
+    project_intake_node,
     qa_node,
     rag_node,
     reviewer_node,
+    task_classifier_node,
 )
 from app.graph.state import AgentState
 from app.graph.supervisor import route_after_supervisor, supervisor_node
@@ -30,9 +33,11 @@ if TYPE_CHECKING:
 def build_workflow() -> CompiledStateGraph:
     """Build and compile the multi-agent workflow graph.
 
-    The graph runs Analyst -> Developer -> Reviewer -> QA -> Supervisor. The
-    Supervisor either loops back to the Developer, routes to the Integrator on
-    success, or ends the workflow.
+    The graph runs Project Intake -> Project Brief -> Task Classifier -> RAG
+    -> Analyst -> Developer -> Reviewer -> QA -> Supervisor. Project Intake
+    and Project Brief are no-ops outside project mode. The Supervisor either
+    loops back to the Developer, routes to the Integrator on success, or ends
+    the workflow.
 
     Returns:
         The compiled LangGraph workflow, ready for ``ainvoke``.
@@ -41,6 +46,9 @@ def build_workflow() -> CompiledStateGraph:
 
     # The add_node calls are suppressed below: the node functions are valid
     # LangGraph nodes at runtime but do not match LangGraph's typed overloads.
+    graph.add_node("project_intake", project_intake_node)  # type: ignore[call-overload]
+    graph.add_node("project_brief", project_brief_node)  # type: ignore[call-overload]
+    graph.add_node("task_classifier", task_classifier_node)  # type: ignore[call-overload]
     graph.add_node("rag", rag_node)  # type: ignore[call-overload]
     graph.add_node("analyst", analyst_node)  # type: ignore[call-overload]
     graph.add_node("developer", developer_node)  # type: ignore[call-overload]
@@ -49,7 +57,10 @@ def build_workflow() -> CompiledStateGraph:
     graph.add_node("supervisor", supervisor_node)  # type: ignore[call-overload]
     graph.add_node("integrator", integrator_node)  # type: ignore[call-overload]
 
-    graph.add_edge(START, "rag")
+    graph.add_edge(START, "project_intake")
+    graph.add_edge("project_intake", "project_brief")
+    graph.add_edge("project_brief", "task_classifier")
+    graph.add_edge("task_classifier", "rag")
     graph.add_edge("rag", "analyst")
     graph.add_edge("analyst", "developer")
     graph.add_edge("developer", "reviewer")

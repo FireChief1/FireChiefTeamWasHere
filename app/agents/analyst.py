@@ -10,6 +10,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from app.agents.base import BaseAgent
+from app.agents.project_context import project_context_section
 from app.graph.state import AgentState
 from app.llm.pool import Capability
 
@@ -43,12 +44,19 @@ class AnalystAgent(BaseAgent[PlanOutput]):
             "concrete implementation steps that will guide a developer.\n\n"
             "Keep the plan focused: 2 to 5 steps, each a single actionable "
             "instruction about the implementation logic. Do not write code "
-            "yourself, and do not include steps for creating files, writing "
-            "tests, or running code -- a separate QA agent handles testing."
+            "yourself, and do not include steps for creating tests or running "
+            "code -- a separate QA agent handles testing. In Project Mode, if "
+            "the task asks for a user-facing artifact such as an HTML page, "
+            "plan that artifact output directly; do not plan changes to this "
+            "agent system's implementation files unless the user explicitly "
+            "asks to modify the system."
         )
 
     def build_user_message(self, state: AgentState) -> str:
         parts = [f"TASK:\n{state['task']}"]
+        project_context = project_context_section(state)
+        if project_context:
+            parts.append(project_context)
         rag_context = state.get("rag_context") or []
         if rag_context:
             parts.append(

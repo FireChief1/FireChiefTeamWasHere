@@ -16,6 +16,11 @@ from app.config import settings
 from app.rag.store import get_collection, get_embeddings
 
 
+def source_domain(source: str) -> str:
+    """Return the top-level docs domain for a source path."""
+    return source.split("/", 1)[0] if "/" in source else "general"
+
+
 def chunk_markdown(text: str) -> list[str]:
     """Split markdown into chunks, one per second-level (`## `) section.
 
@@ -58,7 +63,7 @@ def ingest() -> int:
         for index, chunk in enumerate(chunk_markdown(doc.read_text())):
             documents.append(chunk)
             ids.append(f"{source}::{index}")
-            metadatas.append({"source": source})
+            metadatas.append({"source": source, "domain": source_domain(source)})
 
     if not documents:
         logger.warning("no markdown documents found under docs/")

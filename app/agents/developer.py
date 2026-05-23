@@ -11,20 +11,22 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from app.agents.base import BaseAgent
+from app.agents.project_context import project_context_section
 from app.graph.state import AgentState
 from app.llm.pool import Capability
 
 
 class CodeFile(BaseModel):
-    """A single generated source file.
+    """A single generated file.
 
     Attributes:
-        filename: The file name, for example ``bank_account.py``.
-        content: The complete source code of the file.
+        filename: The safe relative file name, for example ``bank_account.py``
+            or ``index.html``.
+        content: The complete file content.
     """
 
-    filename: str = Field(description="The file name, e.g. bank_account.py")
-    content: str = Field(description="The complete source code of the file.")
+    filename: str = Field(description="Safe relative file name, e.g. bank_account.py")
+    content: str = Field(description="The complete file content.")
 
 
 class CodeOutput(BaseModel):
@@ -88,6 +90,9 @@ class DeveloperAgent(BaseAgent[CodeOutput]):
     def build_user_message(self, state: AgentState) -> str:
         """Build the prompt, branching between first pass and review iteration."""
         parts = [f"TASK:\n{state['task']}"]
+        project_context = project_context_section(state)
+        if project_context:
+            parts.append(project_context)
 
         plan = state.get("plan") or []
         if plan:

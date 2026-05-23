@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 Severity = Literal["BLOCKER", "MAJOR", "MINOR"]
 Status = Literal["RUNNING", "SUCCESS", "COMPLETED_WITH_WARNINGS", "FAILED"]
+TaskProfile = Literal["python", "static_web", "docs", "project"]
 
 
 class FeedbackItem(BaseModel):
@@ -61,9 +62,31 @@ class AgentState(TypedDict, total=False):
     Attributes:
         task: The original task description from the user.
         task_id: A short unique identifier for this task run.
-        mode: Whether the workflow generates new code or reviews existing code.
+        mode: Whether the workflow generates code, reviews code, or works with
+            project-level repository context.
+        task_profile: The implementation profile selected for this task.
+        task_profile_reason: Human-readable reason for the selected profile.
         max_iterations: The Developer-Reviewer loop cap for this run.
         use_rag: Whether to retrieve RAG context for this run.
+        project_path: Target project folder for project-mode intake and writes.
+        project_mcp_root: Effective root reported by the project MCP server.
+        project_path_mismatch: True if selected path and MCP root differ.
+        project_apply_changes: Whether Project Mode may write generated files.
+        project_files: Text-oriented project files found during project intake.
+        project_relevant_files: Files selected as most relevant to the task.
+        project_search_matches: Search matches that explain relevance.
+        project_file_excerpts: Small excerpts from relevant files for grounding.
+        project_git_status: Current repository status summary.
+        project_git_diff: Bounded git diff summary for the current repository.
+        project_summary: Human-readable project intake summary.
+        project_focus_terms: Task-derived search terms used for project intake.
+        project_brief: Deterministic project profile summary.
+        project_stack: Detected languages, frameworks, and project technologies.
+        project_entrypoints: Likely run commands or primary files.
+        project_test_commands: Detected automated verification commands.
+        project_risks: Project-level risks inferred from files and git state.
+        project_brief_files: Config files read to build the project brief.
+        project_memory: Previous project registry/checkpoint context.
         plan: The ordered implementation steps from the Analyst.
         code: The generated source files, keyed by filename.
         dev_approach: The Developer's explanation of how it approached the task.
@@ -80,6 +103,12 @@ class AgentState(TypedDict, total=False):
         integration_message: Human-readable git integration result.
         integration_branch: Local branch used for the generated task commit.
         integration_committed: True if the Integrator created a commit.
+        integration_target_path: Project folder written by Project Mode.
+        integration_planned_files: Project Mode files proposed for writing.
+        integration_file_actions: Create/modify/unchanged preview per file.
+        integration_diff: Unified diff for Project Mode preview.
+        integration_written_files: Files written into the project folder.
+        integration_preview_only: True when Project Mode stopped before writing.
         iteration: The current Developer-Reviewer loop iteration.
         issue_count_history: Issue count per iteration, for oscillation detection.
         best_code: The lowest-issue code version seen so far.
@@ -91,9 +120,30 @@ class AgentState(TypedDict, total=False):
 
     task: str
     task_id: str
-    mode: Literal["generate", "review"]
+    mode: Literal["generate", "review", "project"]
+    task_profile: TaskProfile
+    task_profile_reason: str
     max_iterations: int
     use_rag: bool
+    project_path: str
+    project_mcp_root: str
+    project_path_mismatch: bool
+    project_apply_changes: bool
+    project_files: list[str]
+    project_relevant_files: list[str]
+    project_search_matches: list[dict[str, object]]
+    project_file_excerpts: list[dict[str, object]]
+    project_git_status: str
+    project_git_diff: str
+    project_summary: str
+    project_focus_terms: list[str]
+    project_brief: str
+    project_stack: list[str]
+    project_entrypoints: list[str]
+    project_test_commands: list[str]
+    project_risks: list[str]
+    project_brief_files: list[str]
+    project_memory: str
     plan: list[str]
     code: dict[str, str]
     dev_approach: str
@@ -110,6 +160,12 @@ class AgentState(TypedDict, total=False):
     integration_message: str
     integration_branch: str
     integration_committed: bool
+    integration_target_path: str
+    integration_planned_files: list[str]
+    integration_file_actions: list[dict[str, str]]
+    integration_diff: str
+    integration_written_files: list[str]
+    integration_preview_only: bool
     iteration: int
     issue_count_history: list[int]
     best_code: dict[str, str]

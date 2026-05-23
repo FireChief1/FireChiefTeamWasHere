@@ -2,7 +2,7 @@
 
 This document describes the architecture of the multi-agent code development system. It is the revised design that incorporates the resilience mechanisms identified in `architecture-edge-cases.md`.
 
-The system simulates a software development team using local LLMs. Specialized agents (Analyst, Developer, Reviewer, QA) collaborate under an orchestrator to turn a task description into reviewed, tested code.
+The system simulates a software development team using local LLMs. Specialized agents (Analyst, Developer, Reviewer, QA) collaborate under an orchestrator to turn a task description into reviewed, tested code. Project Mode adds a target project folder, project intake, unified diff previews, and an explicit apply button so agents can reason with project-level context without silently changing the selected folder.
 
 ## Design Goals
 
@@ -83,10 +83,14 @@ The orchestrator software is organized in five layers. Each layer calls only the
 
 | Component | Type | Responsibility |
 |-----------|------|----------------|
+| Project Intake | Deterministic node | Read-only repository scan for Project Mode |
+| Project Brief | Deterministic node | Detect stack, entrypoints, test commands, and risks |
+| Project Registry | Service | Persist projects and checkpoints in Postgres |
+| Task Classifier | Deterministic node | Select task profile: Python, Static Web, Docs, Project |
 | Analyst | LLM agent | Break the task into a structured plan |
-| Developer | LLM agent | Write code; fix code on review feedback |
-| Reviewer | LLM agent | Inspect code quality, correctness, security |
-| QA | LLM agent | Generate and run tests |
+| Routed Developer | LLM agent | Use the profile-specific developer persona |
+| Routed Reviewer | LLM agent | Use the profile-specific reviewer persona |
+| Routed QA | LLM/deterministic node | Run profile-specific validation |
 | Supervisor | Deterministic node | Decide: loop, finish, or fail |
 | Integrator | Deterministic node | Create branch and local commit on success |
 | LLMPool | Service | Route requests to healthy nodes by capability |
@@ -101,6 +105,21 @@ The Supervisor and Integrator are deterministic — they make no LLM judgment ca
                     ┌─────────────┐
                     │   START     │
                     └──────┬──────┘
+                          ▼
+                  ┌──────────────────┐
+                  │ PROJECT INTAKE   │  read-only repo scan;
+                  │                  │  no-op outside project mode
+                  └────────┬─────────┘
+                           ▼
+                  ┌──────────────────┐
+                  │ PROJECT BRIEF    │  stack, entrypoints,
+                  │                  │  tests, risks
+                  └────────┬─────────┘
+                           ▼
+                  ┌──────────────────┐
+                  │ TASK CLASSIFIER  │  chooses python,
+                  │                  │  static_web, docs, project
+                  └────────┬─────────┘
                            ▼
                   ┌──────────────────┐
                   │   RAG            │  retrieves coding standards;
@@ -191,6 +210,82 @@ State carries structured fields, not a growing message transcript. Each node rec
 
 If the RAG knowledge base is empty, unavailable, disabled, or returns nothing, agents proceed with an empty context string and the workflow records `rag_status`, `rag_message`, and `rag_chunk_count` for the UI. Missing RAG degrades quality but never crashes the workflow. (EC-26)
 
+### Project Mode Intake
+
+Project Mode accepts a `project_path` from the UI and starts with
+deterministic Project Intake and Project Brief nodes. Project Intake uses MCP
+tools scoped to that folder to list text-oriented files, search task-derived
+focus terms, read `git status --short --branch`, and capture a bounded
+`git diff --stat`. It writes `project_path`, `project_summary`,
+`project_relevant_files`, `project_search_matches`, `project_git_status`,
+`project_git_diff`, and `project_focus_terms` into state.
+
+Project Brief then reads recognized manifests such as `package.json`,
+`pyproject.toml`, `requirements.txt`, `Cargo.toml`, `go.mod`, `*.csproj`, and
+Docker files. It writes `project_brief`, `project_stack`,
+`project_entrypoints`, `project_test_commands`, `project_risks`, and
+`project_brief_files` into state. Analyst, Developer, and Reviewer prompts
+include this compact context so they reason from deterministic project facts
+instead of only task text.
+
+The sidebar uses a Postgres-backed Project Registry to store selected project
+folders and their latest checkpoints. Opening a project updates
+`last_opened_at`; completing a Project Mode run stores a checkpoint with the
+task, status, profile, brief, planned/written files, diff preview state, and
+test counts. It also appends a `project_timeline_events` row so the project has
+a conversation timeline rather than only a flat summary. User prompts are saved
+as `user_message` events and the workflow's composed response is saved as an
+`assistant_message` event. The main Project Mode surface renders those messages
+as a chat; Project Intake, Developer, Reviewer, QA, Supervisor, and Integrator
+remain visible in a collapsed technical details panel for debugging. The
+sidebar can rename or delete registry entries; deletion removes only Postgres
+registry data through cascading foreign keys and never deletes files on disk.
+Registry reads are wrapped in a short Streamlit cache and are cleared after
+writes. The next run receives a compact `project_memory` block containing the
+latest known brief, stack, test commands, risks, last task, recent checkpoints,
+and recent timeline events.
+
+On a successful Project Mode run, the Integrator is preview-only by default:
+it records `integration_planned_files`, `integration_file_actions`, and a
+unified `integration_diff`. The UI stores the pending apply payload in session
+state and writes generated files only when the user clicks the apply button.
+The write step uses the same MCP path boundary and records
+`integration_written_files`. The Project Registry then marks the matching
+checkpoint as applied and appends a `project_apply` timeline event. It does not
+auto-commit or push the target project; those actions remain human-gated. The
+generated-code mode continues to write into isolated `workspace/task-{id}/`
+folders and create local commits there.
+
+### Task Profiles
+
+The workflow does not route only by programming language; it routes by
+artifact profile. The deterministic Task Classifier currently selects:
+
+- `python` — Python modules, pytest validation, Python reviewer standards.
+- `static_web` — HTML/CSS/vanilla JS artifacts, static-web reviewer, and
+  deterministic HTML/static asset validation.
+- `docs` — Markdown/text documentation output, docs reviewer, and advisory QA
+  that blocks source/artifact files.
+- `project` — Project Mode analysis/recommendation output. This profile is
+  deliberately advisory and accepts exactly `PROJECT_PROPOSAL.md` so an
+  "analyze/propose" request cannot overwrite existing project artifacts.
+
+This prevents static-web tasks from being forced through Python-only filename
+validation or pytest. For example, "Basit HTML sayfası yaz" is routed to
+`static_web`, can produce `index.html`, and is validated as a page rather than
+as a Python module. Conversely, "Analyze this project and propose the next safe
+improvement" is routed to `project`, where the Developer acts as a project
+advisor and the QA node blocks source files such as `index.html`, `.css`, `.js`,
+or `.py`.
+
+### Domain-Aware RAG
+
+RAG retrieval is biased by `task_profile`. Python tasks prefer
+`coding-standards/`, `testing/`, `patterns/`, `security/`, and
+`code-review/`. Static web tasks prefer `frontend/`, `security/`,
+`project-mode/`, and `code-review/`. If no profile-specific chunks are found,
+retrieval falls back to the nearest general matches.
+
 ## Data Flow: The State Object
 
 A single `AgentState` object flows through the workflow, growing as each node contributes. The state is immutable per invocation — each node returns a state update rather than mutating a shared transcript.
@@ -198,7 +293,25 @@ A single `AgentState` object flows through the workflow, growing as each node co
 ```
 AgentState fields:
   task              str            original task description
-  mode              "generate"|"review"
+  mode              "generate"|"review"|"project"
+  task_profile      "python"|"static_web"|"docs"|"project"
+  task_profile_reason str          why the profile was selected
+  project_path      str            selected project folder
+  project_apply_changes bool       whether Project Mode may write files
+  project_summary   str            read-only project intake summary
+  project_files     list[str]      text-oriented repository files
+  project_relevant_files list[str] selected files for agent context
+  project_search_matches list[dict] task-related repository matches
+  project_git_status str           git status snapshot
+  project_git_diff   str           bounded git diff stat
+  project_focus_terms list[str]    terms used for project search
+  project_brief     str            deterministic project profile summary
+  project_stack     list[str]      detected languages/frameworks/services
+  project_entrypoints list[str]    likely run commands or primary files
+  project_test_commands list[str]  likely automated test commands
+  project_risks     list[str]      risks from files, git state, profile state
+  project_brief_files list[str]    manifests/configs read for the brief
+  project_memory    str            saved registry/checkpoint context
   plan              list[str]      from Analyst
   code              dict[str,str]  filename -> content, from Developer
   rag_context       list[str]      retrieved chunks
@@ -210,6 +323,12 @@ AgentState fields:
   integration_message str          git commit result from Integrator
   integration_branch  str          local branch used by Integrator
   integration_committed bool       whether Integrator created a commit
+  integration_target_path str      Project Mode folder written by Integrator
+  integration_planned_files list[str] Project Mode files proposed for writing
+  integration_file_actions list[dict] create/modify/unchanged per file
+  integration_diff str             unified diff for Project Mode preview
+  integration_written_files list[str] Project Mode files written
+  integration_preview_only bool    true when Project Mode stopped before write
   iteration         int            current loop iteration
   issue_count_history  list[int]   for oscillation detection
   best_code         dict[str,str]  best version seen so far
@@ -256,10 +375,20 @@ the UI.
 The current UI runs one task at a time through the sequential graph:
 
 ```
-RAG -> Analyst -> Developer -> Reviewer -> QA -> Supervisor -> Integrator
+Project Intake -> Project Brief -> Task Classifier -> RAG -> Analyst -> Developer -> Reviewer -> QA -> Supervisor -> Integrator
 ```
 
-Generated task output is isolated under `workspace/task-{id}/`; successful or warning-completed tasks are committed in that directory on `feat/task-{id}`. If that branch already exists in the generated task repository, the MCP git tool appends a numeric suffix such as `feat/task-{id}-2`. A future batch runner can use LangGraph `abatch(..., return_exceptions=True)` over the same compiled workflow, but `app/graph/pipeline.py` and a multi-task UI are not part of the current implementation.
+For normal generated-code runs, Project Intake and Project Brief are no-ops. In
+Project Mode they collect context from the selected `project_path` before RAG
+and planning, and the Integrator previews generated file writes as a unified
+diff. Generated task mode remains isolated under `workspace/task-{id}/`;
+successful or warning-completed tasks are committed in that directory on
+`feat/task-{id}`. If that branch already exists in the generated task
+repository, the MCP git tool appends a numeric suffix such as
+`feat/task-{id}-2`. A future batch runner can use LangGraph
+`abatch(..., return_exceptions=True)` over the same compiled workflow, but
+`app/graph/pipeline.py` and a multi-task UI are not part of the current
+implementation.
 
 ## Git and Remote Push
 
@@ -300,7 +429,7 @@ remains the tool layer; only the caller changed from the LLM to node code.
 |-----------|------------------|
 | LangGraph | Workflow orchestration, state machine, conditional edges |
 | LangChain | Agent prompts, structured output, LLM calls |
-| MCP | Filesystem, git, and shell tools, invoked by node code |
+| MCP | Filesystem, project search, git, and shell tools, invoked by node code |
 | RAG (ChromaDB) | Retrieval of coding standards and examples as agent context |
 
 ## Related Documents

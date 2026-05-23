@@ -46,3 +46,89 @@ async def test_integrator_returns_git_commit_metadata(monkeypatch):
     assert update["integration_committed"] is True
     assert update["integration_branch"] == "feat/task-pytest-2"
     assert "committed on feat/task-pytest-2" in update["integration_message"]
+
+
+async def test_integrator_writes_project_mode_files_to_target_path(
+    monkeypatch, tmp_path
+):
+    writes: list[tuple[str, str]] = []
+
+    class FakeTools:
+        async def root_path(self) -> str:
+            return str(tmp_path)
+
+        async def file_exists(self, rel_path: str) -> bool:
+            return False
+
+        async def read_file(self, rel_path: str) -> str:
+            raise AssertionError("new files should not be read")
+
+        async def write_file(self, rel_path: str, content: str) -> str:
+            writes.append((rel_path, content))
+            return f"wrote {rel_path}"
+
+    @asynccontextmanager
+    async def fake_project_tools(root: str) -> AsyncIterator[FakeTools]:
+        assert root == str(tmp_path)
+        yield FakeTools()
+
+    monkeypatch.setattr(integrator, "project_tools", fake_project_tools)
+
+    state: AgentState = {
+        "task": "Add a helper file.",
+        "task_id": "pytest",
+        "mode": "project",
+        "project_path": str(tmp_path),
+        "project_apply_changes": True,
+        "code": {"helper.py": "def helper():\n    return True\n"},
+    }
+
+    update = await integrator.integrator_node(state)
+
+    assert writes == [("helper.py", "def helper():\n    return True\n")]
+    assert update["integration_committed"] is False
+    assert update["integration_branch"] == ""
+    assert update["integration_target_path"] == str(tmp_path)
+    assert update["integration_planned_files"] == ["helper.py"]
+    assert update["integration_written_files"] == ["helper.py"]
+    assert update["integration_preview_only"] is False
+
+
+async def test_integrator_previews_project_mode_files_by_default(
+    monkeypatch, tmp_path
+):
+    writes: list[tuple[str, str]] = []
+
+    class FakeTools:
+        async def write_file(self, rel_path: str, content: str) -> str:
+            writes.append((rel_path, content))
+            return f"wrote {rel_path}"
+
+    @asynccontextmanager
+    async def fake_project_tools(root: str) -> AsyncIterator[FakeTools]:
+        assert root == str(tmp_path)
+        yield FakeTools()
+
+    monkeypatch.setattr(integrator, "project_tools", fake_project_tools)
+
+    state: AgentState = {
+        "task": "Add a helper file.",
+        "task_id": "pytest",
+        "mode": "project",
+        "project_path": str(tmp_path),
+        "code": {"helper.py": "def helper():\n    return True\n"},
+    }
+
+    update = await integrator.integrator_node(state)
+
+    assert writes == []
+    assert update["integration_target_path"] == str(tmp_path)
+    assert update["integration_planned_files"] == ["helper.py"]
+    assert update["integration_file_actions"] == [
+        {"file": "helper.py", "action": "create"}
+    ]
+    assert "--- /dev/null" in update["integration_diff"]
+    assert "+++ helper.py" in update["integration_diff"]
+    assert update["integration_written_files"] == []
+    assert update["integration_preview_only"] is True
+    assert "preview only" in update["integration_message"]
