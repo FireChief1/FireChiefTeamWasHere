@@ -16,6 +16,7 @@ from app.agents.project_context import project_context_section
 from app.graph.advisory_qa import advisory_qa_update as _advisory_qa_update
 from app.graph.code_utils import strip_code_fences as _strip_code_fences
 from app.graph.code_validation import validate_code_files as _validate_code_files
+from app.graph.code_validation import validate_source_files as _validate_source_files
 from app.graph.nodes import (
     _clean_developer_approach,
     _clean_plan,
@@ -133,6 +134,38 @@ def test_validate_code_files_rejects_unsupported_filenames():
     error = _validate_code_files({"src/calculator.py": "def add():\n    return 1\n"})
     assert error is not None
     assert "unsupported filename" in error
+
+
+def test_validate_source_files_accepts_multi_file_artifact():
+    # The reusable multi-file validator new languages build on: header + source.
+    error = _validate_source_files(
+        {"src/stack.c": "int main(){return 0;}", "include/stack.h": "#pragma once\n"},
+        allowed_suffixes={".c", ".h"},
+        require_suffix=".c",
+    )
+    assert error is None
+
+
+def test_validate_source_files_rejects_unsafe_paths_and_bad_suffixes():
+    assert _validate_source_files(
+        {"../escape.c": "x"}, allowed_suffixes={".c"}
+    ) is not None
+    assert _validate_source_files(
+        {"main.rs": "fn main(){}"}, allowed_suffixes={".c", ".h"}
+    ) is not None
+    assert _validate_source_files(
+        {"empty.c": "   "}, allowed_suffixes={".c"}
+    ) is not None
+
+
+def test_validate_source_files_enforces_required_suffix():
+    error = _validate_source_files(
+        {"only.h": "#pragma once\n"},
+        allowed_suffixes={".c", ".h"},
+        require_suffix=".c",
+        require_suffix_message="Need at least one .c source file.",
+    )
+    assert error == "Need at least one .c source file."
 
 
 def test_validate_code_files_rejects_syntax_errors():
