@@ -1,9 +1,10 @@
 """MCP server exposing safe, workspace-scoped file and test tools.
 
 This server is the security boundary for agent-generated code. Every path is
-confined to the workspace root (no path traversal), and the only command that
-can be executed is pytest, under a timeout. The workflow nodes act as MCP
-clients of this server; the LLM never calls these tools directly.
+confined to the workspace root (no path traversal), and the only commands that
+can be executed are the language test runners (pytest, and node --check /
+node --test), each under a timeout. The workflow nodes act as MCP clients of
+this server; the LLM never calls these tools directly.
 
 Run as a standalone MCP server (stdio transport):
 
@@ -15,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from collections.abc import Callable
@@ -273,6 +275,108 @@ def run_pytest(rel_dir: str, timeout: int = 30) -> str:
     except subprocess.TimeoutExpired:
         return "TIMEOUT: test execution exceeded the time limit"
     return proc.stdout + proc.stderr
+
+
+def _tap_count(output: str, label: str) -> int:
+    """Read a `# <label> N` summary line from node --test TAP output."""
+    match = re.search(rf"^# {label} (\d+)$", output, re.MULTILINE)
+    return int(match.group(1)) if match else 0
+
+
+@mcp.tool()
+def run_node_tests(rel_dir: str, timeout: int = 30) -> str:
+    """Syntax-check and run Node.js tests in a workspace directory.
+
+    Toolchain-gated: if `node` is not installed, returns ``available: false`` so
+    callers can degrade gracefully. Runs ``node --check`` on each script, then
+    Node's built-in test runner (``node --test``), all under a hard timeout.
+
+    Args:
+        rel_dir: The directory to test, relative to the workspace root.
+        timeout: Maximum seconds before a run is killed.
+
+    Returns:
+        A JSON object with available, passed, failed, total, and output.
+    """
+    target = _safe_path(rel_dir)
+    node = shutil.which("node")
+    if node is None:
+        return json.dumps(
+            {
+                "available": False,
+                "passed": 0,
+                "failed": 0,
+                "total": 0,
+                "output": "node is not installed",
+            }
+        )
+
+    syntax_errors: list[str] = []
+    for path in sorted(target.rglob("*")):
+        if path.is_file() and path.suffix.casefold() in {".js", ".mjs", ".cjs"}:
+            try:
+                check = subprocess.run(
+                    [node, "--check", str(path)],
+                    cwd=str(target),
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                )
+            except subprocess.TimeoutExpired:
+                return json.dumps(
+                    {
+                        "available": True,
+                        "passed": 0,
+                        "failed": 1,
+                        "total": 1,
+                        "output": "TIMEOUT during syntax check",
+                    }
+                )
+            if check.returncode != 0:
+                rel = path.relative_to(target)
+                syntax_errors.append(f"{rel}: {(check.stderr or check.stdout).strip()}")
+    if syntax_errors:
+        return json.dumps(
+            {
+                "available": True,
+                "passed": 0,
+                "failed": len(syntax_errors),
+                "total": len(syntax_errors),
+                "output": "Syntax errors:\n" + "\n".join(syntax_errors),
+            }
+        )
+
+    try:
+        proc = subprocess.run(
+            [node, "--test"],
+            cwd=str(target),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return json.dumps(
+            {
+                "available": True,
+                "passed": 0,
+                "failed": 1,
+                "total": 1,
+                "output": "TIMEOUT: node --test exceeded the time limit",
+            }
+        )
+    output = proc.stdout + proc.stderr
+    passed = _tap_count(output, "pass")
+    failed = _tap_count(output, "fail")
+    total = _tap_count(output, "tests") or (passed + failed)
+    return json.dumps(
+        {
+            "available": True,
+            "passed": passed,
+            "failed": failed,
+            "total": total,
+            "output": output[-4000:],
+        }
+    )
 
 
 def _ensure_gitignore(target: Path) -> None:

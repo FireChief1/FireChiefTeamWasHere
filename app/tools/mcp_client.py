@@ -98,6 +98,19 @@ class WorkspaceTools:
         )
         return _tool_text(result)
 
+    async def run_node_tests(
+        self, rel_dir: str, timeout: int = 30
+    ) -> dict[str, object]:
+        """Run node --check / node --test in a workspace directory.
+
+        Returns a dict with available/passed/failed/total/output; available is
+        False when Node is not installed on the server host.
+        """
+        result = await self._session.call_tool(
+            "run_node_tests", {"rel_dir": rel_dir, "timeout": timeout}
+        )
+        return cast(dict[str, object], json.loads(_tool_text(result)))
+
     async def git_commit(
         self, rel_dir: str, message: str, branch: str
     ) -> dict[str, object]:

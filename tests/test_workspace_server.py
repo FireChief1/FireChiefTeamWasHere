@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
+
+import pytest
 
 from app.mcp_servers.workspace_server import (
     _ensure_gitignore,
@@ -13,8 +16,69 @@ from app.mcp_servers.workspace_server import (
     git_status,
     list_files,
     root_path,
+    run_node_tests,
     search_text,
 )
+
+_HAS_NODE = shutil.which("node") is not None
+
+
+def _scaffold_node_task(root, module_src: str, test_src: str) -> str:
+    """Write a Node task dir (module + package.json + test) and return rel dir."""
+    task = root / "task-node"
+    task.mkdir()
+    (task / "adder.js").write_text(module_src, encoding="utf-8")
+    (task / "package.json").write_text('{\n  "type": "module"\n}\n', encoding="utf-8")
+    (task / "generated.test.mjs").write_text(test_src, encoding="utf-8")
+    return "task-node"
+
+
+_PASSING_TEST = (
+    "import test from 'node:test';\n"
+    "import assert from 'node:assert/strict';\n"
+    "import { add } from './adder.js';\n"
+    "test('adds', () => { assert.equal(add(2, 3), 5); });\n"
+)
+
+
+def test_run_node_tests_reports_available_false_without_node(tmp_path, monkeypatch):
+    monkeypatch.setenv("MCP_WORKSPACE_ROOT", str(tmp_path))
+    monkeypatch.setattr(
+        "app.mcp_servers.workspace_server.shutil.which", lambda _name: None
+    )
+    rel = _scaffold_node_task(tmp_path, "export function add(a,b){return a+b;}\n", _PASSING_TEST)
+    report = json.loads(run_node_tests(rel))
+    assert report["available"] is False
+
+
+@pytest.mark.skipif(not _HAS_NODE, reason="node not installed")
+def test_run_node_tests_passes_for_a_valid_module(tmp_path, monkeypatch):
+    monkeypatch.setenv("MCP_WORKSPACE_ROOT", str(tmp_path))
+    rel = _scaffold_node_task(tmp_path, "export function add(a,b){return a+b;}\n", _PASSING_TEST)
+    report = json.loads(run_node_tests(rel))
+    assert report["available"] is True
+    assert report["passed"] >= 1
+    assert report["failed"] == 0
+
+
+@pytest.mark.skipif(not _HAS_NODE, reason="node not installed")
+def test_run_node_tests_reports_failing_assertions(tmp_path, monkeypatch):
+    monkeypatch.setenv("MCP_WORKSPACE_ROOT", str(tmp_path))
+    failing = _PASSING_TEST.replace("add(2, 3), 5", "add(2, 3), 6")
+    rel = _scaffold_node_task(tmp_path, "export function add(a,b){return a+b;}\n", failing)
+    report = json.loads(run_node_tests(rel))
+    assert report["available"] is True
+    assert report["failed"] >= 1
+
+
+@pytest.mark.skipif(not _HAS_NODE, reason="node not installed")
+def test_run_node_tests_reports_syntax_errors(tmp_path, monkeypatch):
+    monkeypatch.setenv("MCP_WORKSPACE_ROOT", str(tmp_path))
+    rel = _scaffold_node_task(tmp_path, "export function add(a,b){ return a+ ;}\n", _PASSING_TEST)
+    report = json.loads(run_node_tests(rel))
+    assert report["available"] is True
+    assert report["failed"] >= 1
+    assert "Syntax errors" in report["output"]
 
 
 def test_ensure_gitignore_adds_generated_test_artifact_patterns(tmp_path):
