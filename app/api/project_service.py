@@ -454,6 +454,7 @@ async def run_project_workflow(
     }
     if chat_decision is not None:
         initial["project_chat_intent"] = chat_decision.intent
+        initial["project_chat_language"] = chat_decision.language
         initial["project_chat_route_source"] = chat_decision.routed_by
         initial["project_chat_confidence"] = chat_decision.confidence
     if chat_action is not None:

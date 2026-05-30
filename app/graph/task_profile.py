@@ -112,6 +112,21 @@ _TURKISH_ASCII_TRANSLATION = str.maketrans(
     }
 )
 
+# Language axis: a canonical language (typically from the LLM chat router) maps
+# to an implementation profile. Only existing profiles are mapped today; new
+# languages (c, cpp, csharp, standalone node) are added here alongside their
+# profile, persona, validation, and QA -- this map is the single extension seam.
+_LANGUAGE_TO_PROFILE: dict[str, TaskProfile] = {
+    "python": "python",
+    "py": "python",
+    "html": "static_web",
+    "css": "static_web",
+    "javascript": "static_web",
+    "js": "static_web",
+    "typescript": "static_web",
+    "ts": "static_web",
+}
+
 
 def classify_task_profile(state: AgentState) -> tuple[TaskProfile, str]:
     """Classify a task into the implementation profile used downstream."""
@@ -130,6 +145,20 @@ def classify_task_profile(state: AgentState) -> tuple[TaskProfile, str]:
         or has_workflow_implementation_signal
     )
     has_python_artifact_signal = _has_any_term(task, _PYTHON_ARTIFACT_TERMS)
+
+    # Language axis (preferred): when the chat router named a target language and
+    # the task is an implementation, route by language. This is more robust than
+    # keywords for terse/symbol-heavy languages (e.g. "C# sinifi yaz") and is the
+    # seam new languages plug into. Falls through to the keyword logic below when
+    # the router gave no language or one without a profile yet.
+    router_language = _normalized_task(str(state.get("project_chat_language") or ""))
+    mapped_profile = _LANGUAGE_TO_PROFILE.get(router_language)
+    if mapped_profile is not None and has_implementation_signal:
+        return (
+            mapped_profile,
+            f"Chat router identified target language '{router_language}', "
+            f"routed to the {mapped_profile} profile.",
+        )
 
     if is_project_mode and has_project_signal and not has_implementation_signal:
         return (

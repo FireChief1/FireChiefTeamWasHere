@@ -155,6 +155,7 @@ class AgentState(TypedDict, total=False):
     project_memory: str
     project_chat_intent: str
     project_chat_action: str
+    project_chat_language: str
     project_chat_route_source: str
     project_chat_confidence: float
     project_vision_context: str

@@ -243,6 +243,32 @@ async def test_project_chat_normalizes_model_workflow_flag_for_workflow_intent()
     assert decision.should_run_workflow is True
 
 
+async def test_project_chat_carries_language_through_for_workflow_intent():
+    async def lang_router(
+        message: str,
+        context: ProjectChatContext,
+    ) -> ProjectChatDecision:
+        return ProjectChatDecision(
+            intent="implementation",
+            should_run_workflow=True,
+            confidence=0.9,
+            reason="C# class request.",
+            action="modify_project",
+            language="csharp",
+        )
+
+    decision = await route_project_chat_intent(
+        "C# sinifi yaz",
+        ProjectChatContext(),
+        model_router=lang_router,
+    )
+
+    assert decision.intent == "implementation"
+    assert decision.should_run_workflow is True
+    # The target language survives normalization so the classifier can use it.
+    assert decision.language == "csharp"
+
+
 async def test_project_chat_low_confidence_model_decision_clarifies():
     async def fake_router(
         message: str,

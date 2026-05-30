@@ -137,6 +137,14 @@ class ProjectChatDecision(BaseModel):
         default="",
         description="Optional project-relative path target for the selected action.",
     )
+    language: str = Field(
+        default="",
+        description=(
+            "Target programming language for implementation tasks, e.g. python, "
+            "javascript, typescript, html, css, c, cpp, csharp. Empty when not "
+            "an implementation task or the language is unclear."
+        ),
+    )
     routed_by: ProjectChatRouteSource = Field(
         default="model",
         description="Whether the final route came from policy, model, or fallback.",
@@ -243,6 +251,7 @@ def normalize_project_chat_decision(
             response="",
             action=decision.action,
             action_target=decision.action_target,
+            language=decision.language,
             routed_by="model",
         )
     if intent in _DIRECT_INTENTS:
@@ -254,6 +263,7 @@ def normalize_project_chat_decision(
             response=decision.response,
             action=decision.action,
             action_target=decision.action_target,
+            language=decision.language,
             routed_by="model",
         )
     return _direct(

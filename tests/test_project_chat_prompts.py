@@ -23,6 +23,7 @@ def test_router_prompt_keeps_semantic_routing_with_model():
     assert "Use help/action assistant_capabilities" in prompt
     assert "terse request that names an artifact to make" in prompt
     assert "Do not downgrade concrete artifact requests to project_analysis" in prompt
+    assert "set language to the target programming language" in prompt
 
 
 def test_responder_prompt_includes_project_identity_context():
