@@ -583,6 +583,77 @@ def test_register_pending_project_apply_returns_client_safe_payload(tmp_path: Pa
     project_service._PENDING_PROJECT_APPLIES.pop(payload["token"], None)
 
 
+def test_register_pending_project_apply_supersedes_prior_preview(tmp_path: Path):
+    project_service._PENDING_PROJECT_APPLIES.clear()
+    state = {
+        "mode": "project",
+        "status": "SUCCESS",
+        "task_id": "first",
+        "project_path": str(tmp_path),
+        "integration_target_path": str(tmp_path),
+        "integration_preview_only": True,
+        "code": {"index.html": "<!doctype html>\n"},
+    }
+
+    first = project_service.register_pending_project_apply(state)
+    second = project_service.register_pending_project_apply({**state, "task_id": "second"})
+
+    assert first is not None and second is not None
+    # The stale token for the same project is invalidated so it can never
+    # write outdated code; only the latest preview survives.
+    assert first["token"] not in project_service._PENDING_PROJECT_APPLIES
+    assert second["token"] in project_service._PENDING_PROJECT_APPLIES
+    project_service._PENDING_PROJECT_APPLIES.clear()
+
+
+def test_prune_pending_applies_drops_expired_and_caps_size():
+    project_service._PENDING_PROJECT_APPLIES.clear()
+    for index in range(project_service._MAX_PENDING_APPLIES + 5):
+        project_service._PENDING_PROJECT_APPLIES[f"tok-{index}"] = {
+            "token": f"tok-{index}",
+            "task_id": f"task-{index}",
+            "target_path": f"/tmp/project-{index}",
+            "mcp_root": "",
+            "code": {},
+            "planned_files": [],
+            "file_actions": [],
+            "diff": "",
+            "created_at": float(index),
+        }
+
+    # now is far beyond the TTL relative to created_at=0..N, so old ones expire.
+    project_service._prune_pending_applies(
+        now=project_service._PENDING_APPLY_TTL_SECONDS + 1.0
+    )
+
+    assert len(project_service._PENDING_PROJECT_APPLIES) <= project_service._MAX_PENDING_APPLIES
+    project_service._PENDING_PROJECT_APPLIES.clear()
+
+
+def test_project_memory_summary_is_length_bounded():
+    from app.project_registry import _MAX_MEMORY_SUMMARY_CHARS, project_memory_summary
+
+    project = {
+        "id": 1,
+        "name": "demo",
+        "path": "/tmp/demo",
+        "project_brief": "B" * 10_000,
+        "project_stack": ["python"],
+        "project_entrypoints": [],
+        "project_test_commands": [],
+        "project_risks": ["R" * 5_000 for _ in range(5)],
+        "last_task": "do things",
+        "last_status": "SUCCESS",
+    }
+
+    summary = project_memory_summary(project, [])  # type: ignore[arg-type]
+
+    # The brief line is clipped to 600 chars, and the whole summary is clamped.
+    assert "Last project brief: " + "B" * 600 in summary
+    assert "B" * 601 not in summary
+    assert len(summary) <= _MAX_MEMORY_SUMMARY_CHARS + 3
+
+
 def test_run_payload_exposes_developer_diagnostics():
     payload = project_service.run_payload(
         {

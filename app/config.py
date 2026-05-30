@@ -61,6 +61,12 @@ class Settings(BaseSettings):
     max_iterations: int = 3
     test_timeout: int = 30
 
+    # --- Project memory ---
+    # Max active semantic memory chunks kept per project. New chunks evict the
+    # lowest-importance, oldest ones (in Postgres and Chroma) so memory does not
+    # grow without bound across a project's lifetime.
+    project_memory_max_chunks: int = 200
+
     # --- RAG ---
     rag_top_k: int = 5
     chunk_size: int = 500

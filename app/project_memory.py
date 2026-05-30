@@ -12,8 +12,10 @@ from typing import Any
 
 from loguru import logger
 
+from app.config import settings
 from app.project_registry import (
     ProjectMemoryChunk,
+    prune_project_memory_chunks,
     record_project_memory_chunk,
 )
 from app.rag.store import get_embeddings, get_project_memory_collection
@@ -66,8 +68,27 @@ def compact_project_exchange(
         dedupe_key=f"exchange:{task_id}" if task_id else "",
     )
     if chunk is not None:
-        index_project_memory_chunk(project_path, chunk)
+        # Casual conversation/clarify/fallback turns stay in the durable record
+        # but are kept out of the semantic index so they never resurface as
+        # "relevant memory" and pollute future prompts.
+        if kind != "conversation":
+            index_project_memory_chunk(project_path, chunk)
+        evicted = prune_project_memory_chunks(
+            project_path, settings.project_memory_max_chunks
+        )
+        _delete_memory_vectors(evicted)
     return chunk
+
+
+def _delete_memory_vectors(memory_ids: list[int]) -> None:
+    """Drop evicted chunks' vectors from Chroma to match Postgres."""
+    if not memory_ids:
+        return
+    try:
+        collection = get_project_memory_collection()
+        collection.delete(ids=[f"project-memory:{memory_id}" for memory_id in memory_ids])
+    except Exception as exc:  # noqa: BLE001 - vector cleanup is best-effort
+        logger.warning(f"project memory vector eviction unavailable: {exc}")
 
 
 def index_project_memory_chunk(
@@ -94,6 +115,24 @@ def index_project_memory_chunk(
         )
     except Exception as exc:  # noqa: BLE001 - memory indexing is non-critical
         logger.warning(f"project memory semantic indexing unavailable: {exc}")
+        return False
+    return True
+
+
+def purge_project_memory(project_path: str) -> bool:
+    """Remove all semantic memory vectors for one project from Chroma.
+
+    Postgres rows are removed by the project's ON DELETE CASCADE; this clears
+    the secondary vector index so a project re-created at the same path does not
+    inherit the deleted project's memories (vectors are scoped by path string,
+    not by the project's database id).
+    """
+    resolved_path = str(Path(project_path).expanduser().resolve())
+    try:
+        collection = get_project_memory_collection()
+        collection.delete(where={"project_path": resolved_path})
+    except Exception as exc:  # noqa: BLE001 - memory purge is best-effort
+        logger.warning(f"project memory purge unavailable: {exc}")
         return False
     return True
 

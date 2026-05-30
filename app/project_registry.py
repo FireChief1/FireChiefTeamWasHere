@@ -15,6 +15,7 @@ from app.config import settings
 
 _MAX_PROJECTS = 30
 _MAX_CHECKPOINTS = 20
+_MAX_MEMORY_SUMMARY_CHARS = 3500
 
 _PROJECT_COLUMNS = (
     "id",
@@ -383,10 +384,18 @@ def delete_project(path: str | Path) -> bool:
     try:
         with _connect() as connection, connection.cursor() as cursor:
             cursor.execute("DELETE FROM projects WHERE path = %s", (str(resolved),))
-            return cursor.rowcount > 0
+            deleted = cursor.rowcount > 0
     except psycopg.Error as exc:
         logger.warning(f"could not delete project registry entry: {exc}")
         return False
+    if deleted:
+        # Postgres chunks cascade on delete; also clear the secondary Chroma
+        # vector index so a project re-created at this path does not inherit the
+        # deleted project's memory. Lazy import avoids a circular dependency.
+        from app.project_memory import purge_project_memory
+
+        purge_project_memory(str(resolved))
+    return deleted
 
 
 def load_projects(limit: int = _MAX_PROJECTS) -> list[ProjectRecord]:
@@ -568,6 +577,40 @@ def load_project_memory_chunks(
         logger.warning(f"could not load project memory chunks: {exc}")
         return []
     return [_memory_from_row(row) for row in rows]
+
+
+def prune_project_memory_chunks(path: str | Path, keep: int) -> list[int]:
+    """Delete a project's lowest-priority memory chunks beyond `keep`.
+
+    Keeps the top `keep` chunks ordered by importance then recency and removes
+    the rest, returning the deleted chunk ids so the caller can also drop their
+    Chroma vectors. Bounds per-project memory growth over the project lifetime.
+    """
+    if keep < 0:
+        return []
+    resolved = _resolve_path(path)
+    try:
+        with _connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                """
+                DELETE FROM project_memory_chunks
+                WHERE id IN (
+                    SELECT m.id
+                    FROM project_memory_chunks m
+                    JOIN projects p ON p.id = m.project_id
+                    WHERE p.path = %s
+                    ORDER BY m.importance DESC, m.id DESC
+                    OFFSET %s
+                )
+                RETURNING id
+                """,
+                (str(resolved), keep),
+            )
+            rows = cursor.fetchall()
+    except psycopg.Error as exc:
+        logger.warning(f"could not prune project memory chunks: {exc}")
+        return []
+    return [int(row[0]) for row in rows]
 
 
 def record_project_checkpoint(state: dict[str, Any]) -> None:
@@ -790,7 +833,7 @@ def project_memory_summary(
 
     lines = [f"Known project: {project['name']} at {project['path']}."]
     if project["project_brief"]:
-        lines.append(f"Last project brief: {project['project_brief']}")
+        lines.append(f"Last project brief: {project['project_brief'][:600]}")
     if project["project_stack"]:
         lines.append("Known stack: " + ", ".join(project["project_stack"][:8]))
     if project["project_entrypoints"]:
@@ -830,7 +873,12 @@ def project_memory_summary(
                 f"- [{chunk['kind']}; importance {chunk['importance']}] "
                 f"{chunk['content'][:240]}"
             )
-    return "\n".join(lines)
+    summary = "\n".join(lines)
+    # Final safety clamp so a large brief or risk list cannot blow the prompt
+    # budget (per-section limits above keep this rarely hit).
+    if len(summary) > _MAX_MEMORY_SUMMARY_CHARS:
+        summary = summary[:_MAX_MEMORY_SUMMARY_CHARS].rstrip() + "..."
+    return summary
 
 
 def _connect() -> psycopg.Connection:

@@ -7,6 +7,7 @@ framework is required for the service layer, and the HTTP adapter lives in
 
 from __future__ import annotations
 
+import time
 import uuid
 from pathlib import Path
 from typing import Any, TypedDict
@@ -72,9 +73,14 @@ class PendingProjectApply(TypedDict):
     planned_files: list[str]
     file_actions: list[dict[str, str]]
     diff: str
+    created_at: float
 
 
 _PENDING_PROJECT_APPLIES: dict[str, PendingProjectApply] = {}
+# A pending preview is short-lived: it is superseded by the next run for the
+# same project and should not linger in the long-running server process.
+_PENDING_APPLY_TTL_SECONDS = 3600.0
+_MAX_PENDING_APPLIES = 32
 
 
 async def handle_project_chat(
@@ -392,20 +398,19 @@ async def run_project_workflow(
 ) -> dict[str, Any]:
     """Run the LangGraph project workflow without Streamlit UI callbacks."""
     checkpoints = load_project_checkpoints(project["path"], 5)
-    timeline = load_project_timeline(project["path"], 30)
-    memory_chunks = load_project_memory_chunks(project["path"], 8)
     semantic_memory = semantic_project_memory_for_prompt(
         project_path=project["path"],
         query=task,
     )
-    project_memory = project_memory_summary(
-        project,
-        checkpoints,
-        timeline,
-        memory_chunks,
-    )
+    # Durable project facts + recent run history only. Relevant prior exchanges
+    # come solely from the query-scoped semantic memory, so the workflow prompt
+    # is not flooded with unconditional top-importance chunks or a raw recent
+    # chat transcript (which also duplicated the semantic section).
+    project_memory = project_memory_summary(project, checkpoints)
     if semantic_memory:
-        project_memory = "\n\n".join(part for part in (project_memory, semantic_memory) if part)
+        project_memory = "\n\n".join(
+            part for part in (project_memory, semantic_memory) if part
+        )
 
     pool = get_pool()
     await pool.warm_up()
@@ -827,6 +832,10 @@ def register_pending_project_apply(state: dict[str, Any]) -> dict[str, Any] | No
     if not target_path:
         return None
 
+    resolved_target = str(Path(target_path).expanduser().resolve())
+    now = time.monotonic()
+    _prune_pending_applies(now, supersede_target=resolved_target)
+
     task_id = str(state.get("task_id") or uuid.uuid4().hex[:8])
     token = uuid.uuid4().hex
     pending: PendingProjectApply = {
@@ -838,9 +847,46 @@ def register_pending_project_apply(state: dict[str, Any]) -> dict[str, Any] | No
         "planned_files": list(state.get("integration_planned_files") or list(code)),
         "file_actions": list(state.get("integration_file_actions") or []),
         "diff": str(state.get("integration_diff") or ""),
+        "created_at": now,
     }
     _PENDING_PROJECT_APPLIES[token] = pending
     return public_pending_apply_payload(pending)
+
+
+def _prune_pending_applies(now: float, *, supersede_target: str = "") -> None:
+    """Drop expired, superseded, and overflow pending applies.
+
+    A new preview for a project supersedes any earlier pending apply for the
+    same resolved target, so a stale token can never write outdated code. A TTL
+    and a hard cap bound the dict in the long-running server process.
+    """
+    drop: set[str] = set()
+    for token, pending in _PENDING_PROJECT_APPLIES.items():
+        expired = now - pending.get("created_at", now) > _PENDING_APPLY_TTL_SECONDS
+        superseded = bool(supersede_target) and _same_target(
+            pending["target_path"], supersede_target
+        )
+        if expired or superseded:
+            drop.add(token)
+    for token in drop:
+        _PENDING_PROJECT_APPLIES.pop(token, None)
+
+    overflow = len(_PENDING_PROJECT_APPLIES) - _MAX_PENDING_APPLIES + 1
+    if overflow > 0:
+        oldest = sorted(
+            _PENDING_PROJECT_APPLIES.items(),
+            key=lambda item: item[1].get("created_at", 0.0),
+        )
+        for token, _ in oldest[:overflow]:
+            _PENDING_PROJECT_APPLIES.pop(token, None)
+
+
+def _same_target(left: str, right: str) -> bool:
+    """Return True if two project paths resolve to the same location."""
+    try:
+        return str(Path(left).expanduser().resolve()) == right
+    except OSError:
+        return left == right
 
 
 def public_pending_apply_payload(pending: PendingProjectApply) -> dict[str, Any]:
