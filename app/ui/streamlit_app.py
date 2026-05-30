@@ -39,11 +39,13 @@ from app.history import load_history, record_run
 from app.llm.pool import build_default_pool, set_pool
 from app.project_registry import (
     ProjectCheckpoint,
+    ProjectMemoryChunk,
     ProjectRecord,
     ProjectTimelineEvent,
     delete_project,
     load_project,
     load_project_checkpoints,
+    load_project_memory_chunks,
     load_project_timeline,
     load_projects,
     open_project,
@@ -126,12 +128,21 @@ def _cached_load_project_timeline(
     return load_project_timeline(path, limit=limit)
 
 
+@st.cache_data(ttl=10, show_spinner=False)
+def _cached_load_project_memory_chunks(
+    path: str, limit: int
+) -> list[ProjectMemoryChunk]:
+    """Load compact project memory through Streamlit's short-lived cache."""
+    return load_project_memory_chunks(path, limit=limit)
+
+
 def _clear_project_registry_cache() -> None:
     """Clear cached project registry reads after registry writes."""
     _cached_load_projects.clear()
     _cached_load_project.clear()
     _cached_load_project_checkpoints.clear()
     _cached_load_project_timeline.clear()
+    _cached_load_project_memory_chunks.clear()
 
 
 def _valid_directory(path: Path | str, fallback: Path = PROJECT_ROOT) -> Path:
@@ -314,6 +325,7 @@ def render_project_memory_summary(
     project: ProjectRecord | None,
     checkpoints: list[ProjectCheckpoint],
     timeline: list[ProjectTimelineEvent],
+    memory_chunks: list[ProjectMemoryChunk] | None = None,
 ) -> None:
     """Render a compact, refreshable summary of the selected project's memory."""
     if project is None:
@@ -348,6 +360,13 @@ def render_project_memory_summary(
                 )
                 if event["body"]:
                     st.caption(event["body"][:120])
+    if memory_chunks:
+        with st.expander(f"Compact memory ({len(memory_chunks)})", expanded=False):
+            for chunk in memory_chunks[:8]:
+                st.caption(
+                    f"{chunk['kind']} · önem {chunk['importance']} · "
+                    f"{chunk['content'][:140]}"
+                )
 
 
 def render_project_management_panel(
@@ -1238,6 +1257,7 @@ def refresh_project_panels(
     fresh_project_checkpoints = load_project_checkpoints(project_path, 5)
     fresh_project_history = load_project_checkpoints(project_path, 20)
     fresh_project_timeline = load_project_timeline(project_path, 30)
+    fresh_project_memory_chunks = load_project_memory_chunks(project_path, 8)
     if conversation_slot is not None:
         conversation_slot.empty()
         with conversation_slot.container():
@@ -1249,6 +1269,7 @@ def refresh_project_panels(
                 fresh_project_record,
                 fresh_project_checkpoints,
                 fresh_project_timeline,
+                fresh_project_memory_chunks,
             )
     if history_slot is not None:
         history_slot.empty()
@@ -1413,10 +1434,15 @@ with st.sidebar:
             20,
         )
         cfg_project_timeline = _cached_load_project_timeline(cfg_project_path, 30)
+        cfg_project_memory_chunks = _cached_load_project_memory_chunks(
+            cfg_project_path,
+            8,
+        )
         cfg_project_memory = project_memory_summary(
             cfg_project_record,
             cfg_project_checkpoints,
             cfg_project_timeline,
+            cfg_project_memory_chunks,
         )
         cfg_project_summary_slot = st.empty()
         with cfg_project_summary_slot.container():
@@ -1424,6 +1450,7 @@ with st.sidebar:
                 cfg_project_record,
                 cfg_project_checkpoints,
                 cfg_project_timeline,
+                cfg_project_memory_chunks,
             )
         render_project_management_panel(cfg_project_record, cfg_project_path)
         st.caption(

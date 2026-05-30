@@ -24,7 +24,7 @@ class ProjectChatResponderAgent(BaseAgent[ProjectChatResponse]):
     """Answers non-workflow Project Mode chat/status/help/clarify messages."""
 
     name = "ProjectChatResponder"
-    capability = Capability.REASONER
+    capability = Capability.CHAT
     temperature = 0.3
 
     def output_schema(self) -> type[ProjectChatResponse]:
@@ -37,11 +37,20 @@ class ProjectChatResponderAgent(BaseAgent[ProjectChatResponse]):
             "Developer/Reviewer/QA workflow. Answer naturally in the user's "
             "language, using the provided project context only.\n\n"
             "Rules:\n"
+            "- Treat previous task/status context as history only. Never answer "
+            "as if a previous task is the user's current request.\n"
+            "- The selected project's stack is context, not your full ability "
+            "boundary. Do not claim you can only write the current project's "
+            "language or artifact type.\n"
             "- Do not write or propose code unless the user explicitly asks a "
             "conceptual question about code.\n"
             "- Do not say you inspected files, ran tests, or changed anything "
             "unless the context explicitly says so.\n"
-            "- For status, summarize the known project/checkpoint facts.\n"
+            "- For project status or project identity/location questions, "
+            "include the project name and folder path when available. General "
+            "math or capability questions are not project status.\n"
+            "- Do not invent the current time or date; those must come from the "
+            "current_time action executor.\n"
             "- For clarify, ask one short clarifying question.\n"
             "- Keep the response short and conversational."
         )

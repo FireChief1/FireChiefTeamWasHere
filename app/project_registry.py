@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime
 from pathlib import Path
@@ -61,6 +62,19 @@ _TIMELINE_COLUMNS = (
     "title",
     "body",
     "metadata",
+)
+_MEMORY_COLUMNS = (
+    "id",
+    "project_id",
+    "created_at",
+    "updated_at",
+    "kind",
+    "content",
+    "source_event_ids",
+    "importance",
+    "metadata",
+    "active",
+    "dedupe_key",
 )
 
 _PROJECTS_SCHEMA = """
@@ -168,6 +182,41 @@ _TIMELINE_INDEX = """
 CREATE INDEX IF NOT EXISTS idx_project_timeline_project_created
 ON project_timeline_events (project_id, id DESC)
 """
+_MEMORY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS project_memory_chunks (
+    id SERIAL PRIMARY KEY,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    content TEXT NOT NULL,
+    source_event_ids TEXT NOT NULL,
+    importance INTEGER NOT NULL,
+    metadata TEXT NOT NULL,
+    active BOOLEAN NOT NULL,
+    dedupe_key TEXT NOT NULL
+)
+"""
+_MEMORY_COLUMN_DEFINITIONS = {
+    "project_id": "INTEGER REFERENCES projects(id) ON DELETE CASCADE",
+    "created_at": "TEXT NOT NULL DEFAULT ''",
+    "updated_at": "TEXT NOT NULL DEFAULT ''",
+    "kind": "TEXT NOT NULL DEFAULT ''",
+    "content": "TEXT NOT NULL DEFAULT ''",
+    "source_event_ids": "TEXT NOT NULL DEFAULT '[]'",
+    "importance": "INTEGER NOT NULL DEFAULT 1",
+    "metadata": "TEXT NOT NULL DEFAULT '{}'",
+    "active": "BOOLEAN NOT NULL DEFAULT TRUE",
+    "dedupe_key": "TEXT NOT NULL DEFAULT ''",
+}
+_MEMORY_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_project_memory_project_updated
+ON project_memory_chunks (project_id, active, importance DESC, id DESC)
+"""
+_MEMORY_DEDUPE_INDEX = """
+CREATE UNIQUE INDEX IF NOT EXISTS idx_project_memory_dedupe
+ON project_memory_chunks (project_id, dedupe_key)
+"""
 _PROJECT_PATH_INDEX = """
 CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_path
 ON projects (path)
@@ -228,6 +277,22 @@ class ProjectTimelineEvent(TypedDict):
     title: str
     body: str
     metadata: dict[str, object]
+
+
+class ProjectMemoryChunk(TypedDict):
+    """A compacted, retrievable memory item for one project."""
+
+    id: int
+    project_id: int
+    created_at: str
+    updated_at: str
+    kind: str
+    content: str
+    source_event_ids: list[int]
+    importance: int
+    metadata: dict[str, object]
+    active: bool
+    dedupe_key: str
 
 
 def open_project(path: str | Path, name: str | None = None) -> ProjectRecord | None:
@@ -408,6 +473,101 @@ def load_project_timeline(
         logger.warning(f"could not load project timeline: {exc}")
         return []
     return [_timeline_from_row(row) for row in rows]
+
+
+def record_project_memory_chunk(
+    *,
+    project_path: str | Path,
+    kind: str,
+    content: str,
+    source_event_ids: list[int] | None = None,
+    importance: int = 1,
+    metadata: dict[str, object] | None = None,
+    dedupe_key: str = "",
+) -> ProjectMemoryChunk | None:
+    """Persist or update one compact project memory chunk."""
+    clean_content = content.strip()
+    if not clean_content:
+        return None
+
+    project = open_project(project_path)
+    if project is None:
+        return None
+
+    now = _now()
+    clean_kind = kind.strip() or "conversation"
+    clean_dedupe_key = dedupe_key.strip() or _memory_dedupe_key(
+        clean_kind,
+        clean_content,
+    )
+    values = (
+        project["id"],
+        now,
+        now,
+        clean_kind,
+        clean_content[:4000],
+        json.dumps([int(item) for item in source_event_ids or []]),
+        max(1, min(int(importance), 5)),
+        json.dumps(metadata or {}),
+        True,
+        clean_dedupe_key,
+    )
+    try:
+        with _connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                f"""
+                INSERT INTO project_memory_chunks (
+                    project_id, created_at, updated_at, kind, content,
+                    source_event_ids, importance, metadata, active, dedupe_key
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (project_id, dedupe_key) DO UPDATE SET
+                    updated_at = EXCLUDED.updated_at,
+                    kind = EXCLUDED.kind,
+                    content = EXCLUDED.content,
+                    source_event_ids = EXCLUDED.source_event_ids,
+                    importance = EXCLUDED.importance,
+                    metadata = EXCLUDED.metadata,
+                    active = TRUE
+                RETURNING {", ".join(_MEMORY_COLUMNS)}
+                """,
+                values,
+            )
+            row = cursor.fetchone()
+    except psycopg.Error as exc:
+        logger.warning(f"could not record project memory chunk: {exc}")
+        return None
+    return _memory_from_row(row) if row is not None else None
+
+
+def load_project_memory_chunks(
+    path: str | Path,
+    limit: int = 10,
+    *,
+    active_only: bool = True,
+) -> list[ProjectMemoryChunk]:
+    """Load recent compact project memory chunks."""
+    resolved = _resolve_path(path)
+    active_filter = "AND m.active = TRUE" if active_only else ""
+    try:
+        with _connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT {", ".join(f"m.{column}" for column in _MEMORY_COLUMNS)}
+                FROM project_memory_chunks m
+                JOIN projects p ON p.id = m.project_id
+                WHERE p.path = %s
+                {active_filter}
+                ORDER BY m.importance DESC, m.id DESC
+                LIMIT %s
+                """,
+                (str(resolved), limit),
+            )
+            rows = cursor.fetchall()
+    except psycopg.Error as exc:
+        logger.warning(f"could not load project memory chunks: {exc}")
+        return []
+    return [_memory_from_row(row) for row in rows]
 
 
 def record_project_checkpoint(state: dict[str, Any]) -> None:
@@ -622,6 +782,7 @@ def project_memory_summary(
     project: ProjectRecord | None,
     checkpoints: list[ProjectCheckpoint],
     timeline: list[ProjectTimelineEvent] | None = None,
+    memory_chunks: list[ProjectMemoryChunk] | None = None,
 ) -> str:
     """Build a compact memory block for Project Mode prompts."""
     if project is None:
@@ -662,6 +823,13 @@ def project_memory_summary(
                 f"- {event['created_at']} [{event['kind']}] "
                 f"{event['title']}: {event['body'][:120]}"
             )
+    if memory_chunks:
+        lines.append("Compacted project memory:")
+        for chunk in memory_chunks[:8]:
+            lines.append(
+                f"- [{chunk['kind']}; importance {chunk['importance']}] "
+                f"{chunk['content'][:240]}"
+            )
     return "\n".join(lines)
 
 
@@ -672,6 +840,7 @@ def _connect() -> psycopg.Connection:
         cursor.execute(_PROJECTS_SCHEMA)
         cursor.execute(_CHECKPOINTS_SCHEMA)
         cursor.execute(_TIMELINE_SCHEMA)
+        cursor.execute(_MEMORY_SCHEMA)
         _ensure_columns(cursor, "projects", _PROJECT_COLUMN_DEFINITIONS)
         _ensure_columns(
             cursor,
@@ -683,9 +852,16 @@ def _connect() -> psycopg.Connection:
             "project_timeline_events",
             _TIMELINE_COLUMN_DEFINITIONS,
         )
+        _ensure_columns(
+            cursor,
+            "project_memory_chunks",
+            _MEMORY_COLUMN_DEFINITIONS,
+        )
         cursor.execute(_PROJECT_PATH_INDEX)
         cursor.execute(_CHECKPOINT_INDEX)
         cursor.execute(_TIMELINE_INDEX)
+        cursor.execute(_MEMORY_INDEX)
+        cursor.execute(_MEMORY_DEDUPE_INDEX)
     connection.commit()
     return connection
 
@@ -703,6 +879,12 @@ def _project_name(path: Path) -> str:
 def _now() -> str:
     """Return a compact local timestamp."""
     return datetime.now().isoformat(timespec="microseconds")
+
+
+def _memory_dedupe_key(kind: str, content: str) -> str:
+    """Return a stable dedupe key for a memory chunk."""
+    digest = hashlib.sha1(content.encode("utf-8")).hexdigest()[:16]
+    return f"{kind}:{digest}"
 
 
 def _ensure_columns(
@@ -761,6 +943,29 @@ def _decode_list(raw: object) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item) for item in value]
+
+
+def _decode_int_list(raw: object) -> list[int]:
+    """Decode a JSON text list of ints, returning an empty list on bad data."""
+    values = _decode_list(raw)
+    result: list[int] = []
+    for value in values:
+        try:
+            result.append(int(value))
+        except ValueError:
+            continue
+    return result
+
+
+def _decode_dict(raw: object) -> dict[str, object]:
+    """Decode a JSON text dict, returning an empty dict on bad data."""
+    if not isinstance(raw, str):
+        return {}
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def _project_from_row(row: tuple[Any, ...]) -> ProjectRecord:
@@ -827,4 +1032,21 @@ def _timeline_from_row(row: tuple[Any, ...]) -> ProjectTimelineEvent:
         "title": str(row[4]),
         "body": str(row[5]),
         "metadata": metadata,
+    }
+
+
+def _memory_from_row(row: tuple[Any, ...]) -> ProjectMemoryChunk:
+    """Convert a database memory row to a typed record."""
+    return {
+        "id": int(row[0]),
+        "project_id": int(row[1]),
+        "created_at": str(row[2]),
+        "updated_at": str(row[3]),
+        "kind": str(row[4]),
+        "content": str(row[5]),
+        "source_event_ids": _decode_int_list(row[6]),
+        "importance": int(row[7]),
+        "metadata": _decode_dict(row[8]),
+        "active": bool(row[9]),
+        "dedupe_key": str(row[10]),
     }

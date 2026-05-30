@@ -8,6 +8,7 @@ enter the LangGraph path.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Literal
@@ -15,13 +16,14 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from app.graph.project_actions import (
+    ProjectActionName,
     action_from_chat_decision,
-    detect_read_only_project_action,
+    can_calculate_message,
     execute_read_only_project_action,
     normalize_project_message,
 )
 from app.graph.state import AgentState
-from app.llm.pool import build_default_pool
+from app.llm.pool import get_pool
 
 ProjectChatIntent = Literal[
     "conversation",
@@ -35,6 +37,7 @@ ProjectChatIntent = Literal[
     "clarify",
 ]
 ProjectChatRouteSource = Literal["policy", "model", "fallback"]
+ProjectChatResponseSource = Literal["action", "router", "model", "vision", "fallback"]
 
 _WORKFLOW_INTENTS = {"project_analysis", "implementation"}
 _DIRECT_INTENTS = {
@@ -60,6 +63,8 @@ class ProjectChatContext:
     stack: tuple[str, ...] = ()
     checkpoint_count: int = 0
     timeline_count: int = 0
+    semantic_memory: str = ""
+    has_image_attachment: bool = False
 
     def router_summary(self) -> str:
         """Return a compact context summary for the model router."""
@@ -69,9 +74,35 @@ class ProjectChatContext:
             f"Last status: {self.last_status or '(none)'}",
             f"Last task: {self.last_task or '(none)'}",
             "Stack: " + (", ".join(self.stack) if self.stack else "(unknown)"),
+            f"Attached image: {'yes' if self.has_image_attachment else 'no'}",
             f"Checkpoint count: {self.checkpoint_count}",
             f"Timeline event count: {self.timeline_count}",
         ]
+        return "\n".join(lines)
+
+    def responder_summary(self, intent: ProjectChatIntent) -> str:
+        """Return direct-chat context without letting history become the task."""
+        lines = [
+            f"Project name: {self.project_name or 'Proje'}",
+            f"Project path: {self.project_path or '(not selected)'}",
+            "Stack: " + (", ".join(self.stack) if self.stack else "(unknown)"),
+            f"Checkpoint count: {self.checkpoint_count}",
+            f"Timeline event count: {self.timeline_count}",
+        ]
+        if intent == "status":
+            lines.extend(
+                [
+                    f"Last status: {self.last_status or '(none)'}",
+                    f"Last task: {self.last_task or '(none)'}",
+                ]
+            )
+        elif self.last_status:
+            lines.append(
+                "Previous run status is history only, not the current request: "
+                f"{self.last_status}"
+            )
+        if self.semantic_memory:
+            lines.extend(["", self.semantic_memory])
         return "\n".join(lines)
 
 
@@ -98,10 +129,26 @@ class ProjectChatDecision(BaseModel):
         default="",
         description="Optional direct response when the workflow should not run.",
     )
+    action: ProjectActionName | None = Field(
+        default=None,
+        description="Concrete product action selected by the model router.",
+    )
+    action_target: str = Field(
+        default="",
+        description="Optional project-relative path target for the selected action.",
+    )
     routed_by: ProjectChatRouteSource = Field(
         default="model",
         description="Whether the final route came from policy, model, or fallback.",
     )
+
+
+@dataclass(frozen=True)
+class ProjectChatDirectAnswer:
+    """Direct Project Chat answer plus its source for UI transparency."""
+
+    response: str
+    response_source: ProjectChatResponseSource
 
 
 ModelRouter = Callable[
@@ -116,13 +163,8 @@ def deterministic_project_chat_decision(
     message: str,
     context: ProjectChatContext | None = None,
 ) -> ProjectChatDecision | None:
-    """Return policy-only routing decisions before the model router.
-
-    The LLM router owns semantic classification. This deterministic layer is
-    intentionally narrow: empty messages and high-confidence read-only file
-    actions are handled without starting the expensive workflow.
-    """
-    chat_context = context or ProjectChatContext()
+    """Return policy-only routing decisions before the model router."""
+    del context
     text = _clean(message)
     if not text:
         return _direct(
@@ -131,30 +173,6 @@ def deterministic_project_chat_decision(
             confidence=1.0,
             routed_by="policy",
         )
-
-    action = detect_read_only_project_action(message, chat_context.project_path)
-    if action is not None and action.action == "read_file":
-        return _direct(
-            "file_inspection",
-            action.reason,
-            confidence=action.confidence,
-            routed_by=action.routed_by,
-        )
-    if action is not None and action.action == "path_info":
-        return _direct(
-            "path_info",
-            action.reason,
-            confidence=action.confidence,
-            routed_by=action.routed_by,
-        )
-    if action is not None and action.action == "list_folder":
-        return _direct(
-            "folder_listing",
-            action.reason,
-            confidence=action.confidence,
-            routed_by=action.routed_by,
-        )
-
     return None
 
 
@@ -180,13 +198,29 @@ async def route_project_chat_intent(
             confidence=0.0,
             routed_by="fallback",
         )
-    return normalize_project_chat_decision(decision)
+    return normalize_project_chat_decision(decision, message=message)
 
 
 def normalize_project_chat_decision(
     decision: ProjectChatDecision,
+    *,
+    message: str = "",
 ) -> ProjectChatDecision:
     """Normalize a model decision into the product's routing contract."""
+    if can_calculate_message(message):
+        return ProjectChatDecision(
+            intent="conversation",
+            should_run_workflow=False,
+            confidence=max(decision.confidence, 0.9),
+            reason="Arithmetic question handled by deterministic calculate action.",
+            response="",
+            action="calculate",
+            action_target="",
+            routed_by=decision.routed_by
+            if decision.action == "calculate"
+            else "fallback",
+        )
+
     if decision.confidence < _MODEL_CONFIDENCE_FLOOR:
         return _direct(
             "clarify",
@@ -207,6 +241,8 @@ def normalize_project_chat_decision(
             confidence=decision.confidence,
             reason=decision.reason,
             response="",
+            action=decision.action,
+            action_target=decision.action_target,
             routed_by="model",
         )
     if intent in _DIRECT_INTENTS:
@@ -216,6 +252,8 @@ def normalize_project_chat_decision(
             confidence=decision.confidence,
             reason=decision.reason,
             response=decision.response,
+            action=decision.action,
+            action_target=decision.action_target,
             routed_by="model",
         )
     return _direct(
@@ -234,6 +272,23 @@ async def answer_project_chat_direct(
     responder: DirectResponder | None = None,
 ) -> str:
     """Generate a direct Project Chat response for non-workflow routes."""
+    answer = await answer_project_chat_direct_result(
+        message,
+        decision,
+        context,
+        responder=responder,
+    )
+    return answer.response
+
+
+async def answer_project_chat_direct_result(
+    message: str,
+    decision: ProjectChatDecision,
+    context: ProjectChatContext,
+    *,
+    responder: DirectResponder | None = None,
+) -> ProjectChatDirectAnswer:
+    """Generate a direct Project Chat response with response-source metadata."""
     action = action_from_chat_decision(
         message=message,
         intent=decision.intent,
@@ -242,6 +297,8 @@ async def answer_project_chat_direct(
         reason=decision.reason,
         routed_by=decision.routed_by,
         project_path=context.project_path,
+        action_name=decision.action,
+        action_target=decision.action_target,
     )
     action_response = execute_read_only_project_action(
         action,
@@ -249,21 +306,84 @@ async def answer_project_chat_direct(
         context.project_path,
     )
     if action_response is not None:
-        return action_response
+        return ProjectChatDirectAnswer(action_response, "action")
 
     if decision.response.strip():
-        return decision.response.strip()
+        return ProjectChatDirectAnswer(decision.response.strip(), "router")
 
     model_responder = responder or _model_project_chat_responder
     try:
         response = await model_responder(message, decision, context)
     except Exception:  # noqa: BLE001 - direct chat has a deterministic fallback
-        return compose_project_chat_direct_response(decision, context)
+        return ProjectChatDirectAnswer(
+            compose_project_chat_direct_response(decision, context),
+            "fallback",
+        )
 
     clean_response = response.strip()
     if clean_response:
-        return clean_response
-    return compose_project_chat_direct_response(decision, context)
+        if not is_direct_model_response_grounded(clean_response):
+            return ProjectChatDirectAnswer(
+                compose_project_chat_grounding_fallback(decision, context),
+                "fallback",
+            )
+        return ProjectChatDirectAnswer(clean_response, "model")
+    return ProjectChatDirectAnswer(
+        compose_project_chat_direct_response(decision, context),
+        "fallback",
+    )
+
+
+def is_direct_model_response_grounded(response: str) -> bool:
+    """Return False if a direct model answer claims unexecuted work."""
+    text = _clean(response)
+    if not text:
+        return True
+
+    operational_claims = (
+        r"\bolusturdum\b",
+        r"\bolusturuldu\b",
+        r"\bekledim\b",
+        r"\byazdim\b",
+        r"\bdegistirdim\b",
+        r"\bguncelledim\b",
+        r"\bduzelttim\b",
+        r"\bsildim\b",
+        r"\bkaydettim\b",
+        r"\bokudum\b",
+        r"\blisteledim\b",
+        r"\bcalistirdim\b",
+        r"\btest ettim\b",
+        r"\bcommitledim\b",
+        r"\bpushladim\b",
+        r"\bcreated\b",
+        r"\badded\b",
+        r"\bwrote\b",
+        r"\bmodified\b",
+        r"\bupdated\b",
+        r"\bfixed\b",
+        r"\bdeleted\b",
+        r"\bread\b",
+        r"\blisted\b",
+        r"\bran tests\b",
+        r"\bcommitted\b",
+        r"\bpushed\b",
+    )
+    return not any(re.search(pattern, text) for pattern in operational_claims)
+
+
+def compose_project_chat_grounding_fallback(
+    decision: ProjectChatDecision,
+    context: ProjectChatContext,
+) -> str:
+    """Compose a safe answer when the direct model overclaims actions."""
+    if decision.intent == "status":
+        return compose_project_chat_direct_response(decision, context)
+    return (
+        "Bunu sohbet olarak tuttum; bu turda dosya oluşturmadım, okumadım, "
+        "değiştirmedim veya test çalıştırmadım. Net bir analiz ya da değişiklik "
+        "görevi verirsen teknik ajan akışını başlatırım."
+    )
 
 
 def compose_project_chat_direct_response(
@@ -352,18 +472,14 @@ async def _model_project_chat_router(
     """Ask the local model to classify Project Chat messages."""
     from app.agents.project_chat_router import ProjectChatRouterAgent
 
-    pool = build_default_pool()
-    try:
-        await pool.warm_up()
-        state: AgentState = {
-            "task": message,
-            "mode": "project",
-            "project_path": context.project_path,
-            "project_memory": context.router_summary(),
-        }
-        return await ProjectChatRouterAgent(pool).run(state)
-    finally:
-        await pool.aclose()
+    pool = get_pool()
+    state: AgentState = {
+        "task": message,
+        "mode": "project",
+        "project_path": context.project_path,
+        "project_memory": context.router_summary(),
+    }
+    return await ProjectChatRouterAgent(pool).run(state)
 
 
 async def _model_project_chat_responder(
@@ -374,25 +490,21 @@ async def _model_project_chat_responder(
     """Ask the local model to answer a direct Project Chat message."""
     from app.agents.project_chat_responder import ProjectChatResponderAgent
 
-    pool = build_default_pool()
-    try:
-        await pool.warm_up()
-        state: AgentState = {
-            "task": message,
-            "mode": "project",
-            "project_path": context.project_path,
-            "project_memory": (
-                context.router_summary()
-                + "\n"
-                + f"Router intent: {decision.intent}\n"
-                + f"Router reason: {decision.reason}\n"
-                + f"Router confidence: {decision.confidence:.2f}"
-            ),
-        }
-        output = await ProjectChatResponderAgent(pool).run(state)
-        return output.response
-    finally:
-        await pool.aclose()
+    pool = get_pool()
+    state: AgentState = {
+        "task": message,
+        "mode": "project",
+        "project_path": context.project_path,
+        "project_memory": (
+            context.responder_summary(decision.intent)
+            + "\n"
+            + f"Router intent: {decision.intent}\n"
+            + f"Router reason: {decision.reason}\n"
+            + f"Router confidence: {decision.confidence:.2f}"
+        ),
+    }
+    output = await ProjectChatResponderAgent(pool).run(state)
+    return output.response
 
 
 def _clean(message: str) -> str:

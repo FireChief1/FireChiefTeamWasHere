@@ -18,10 +18,12 @@ from urllib.parse import parse_qs, urlparse
 
 from app.api.project_service import (
     ProjectServiceError,
+    handle_project_apply,
     handle_project_chat,
     list_project_bundle,
     list_projects_payload,
 )
+from app.llm.pool import get_pool
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
@@ -70,6 +72,15 @@ class ApiHandler(BaseHTTPRequestHandler):
                         message=str(payload.get("message") or ""),
                         max_iterations=int(payload.get("maxIterations") or 3),
                         use_rag=bool(payload.get("useRag", True)),
+                        image_attachment=payload.get("image"),
+                    )
+                )
+                self._send_json(result)
+            elif parsed.path == "/api/project-apply":
+                result = asyncio.run(
+                    handle_project_apply(
+                        project_path=str(payload.get("projectPath") or ""),
+                        apply_token=str(payload.get("applyToken") or ""),
                     )
                 )
                 self._send_json(result)
@@ -149,12 +160,31 @@ def _first_query_value(
     raise ProjectServiceError(f"Missing query parameter: {key}")
 
 
+async def _warm_pool() -> None:
+    """Build and warm the process-wide LLM pool once at server startup.
+
+    The pool is a singleton reused by every request, so warming it here means
+    request handlers never rebuild or re-warm it. Each request still runs in its
+    own asyncio.run() loop; the pool's HTTP client is rebound per loop lazily.
+    """
+    pool = get_pool()
+    await pool.warm_up()
+    if pool.is_degraded:
+        print(
+            "WARNING: LLM pool is degraded; one or more core capabilities "
+            "(chat/coder/reasoner) lack a healthy node. Is Ollama running?"
+        )
+    await pool.aclose()
+
+
 def main() -> None:
     """Run the local API server."""
     parser = argparse.ArgumentParser(description="Run the Code Team local API.")
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     args = parser.parse_args()
+
+    asyncio.run(_warm_pool())
 
     server = ThreadingHTTPServer((args.host, args.port), ApiHandler)
     print(f"Code Team API listening on http://{args.host}:{args.port}")

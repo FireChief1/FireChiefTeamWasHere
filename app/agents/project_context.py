@@ -26,6 +26,12 @@ def project_context_section(state: AgentState) -> str:
         parts.append(f"SUMMARY:\n{state['project_summary']}")
     if state.get("project_memory"):
         parts.append(f"PROJECT MEMORY:\n{state['project_memory']}")
+    if state.get("project_vision_context"):
+        parts.append(
+            "ATTACHED IMAGE ANALYSIS -- use as user-provided visual context; "
+            "do not claim you inspected the image yourself again:\n"
+            + str(state["project_vision_context"])
+        )
     if state.get("project_brief"):
         lines = [str(state["project_brief"])]
         stack = state.get("project_stack") or []

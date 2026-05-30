@@ -13,8 +13,8 @@ Agents collaborate under a LangGraph orchestrator:
 
 | Agent | Role |
 |-------|------|
-| Project Chat Router | Uses the local model plus policy checks to decide chat vs workflow |
-| Project Action Router | Registry-backed action layer for `path_info`, `read_file`, `list_folder`, `analyze_project`, or `modify_project` |
+| Project Chat Router | Uses the local model plus safety checks to decide chat vs workflow |
+| Project Action Router | Registry-backed action layer for `path_info`, `read_file`, `list_folder`, `current_time`, `calculate`, `assistant_capabilities`, `analyze_project`, or `modify_project` |
 | Project Chat Responder | Answers direct conversation/status/help messages without Developer/QA |
 | Project Intake | Scans the selected project folder in Project Mode |
 | Project Brief | Detects stack, entrypoints, test commands, and risks |
@@ -46,25 +46,50 @@ checkpoint history, timeline events, and saved project memory. Project Mode
 uses a chat-first main panel: the user sends a project message, the agent
 workflow runs in the background, and the final assistant response is saved back
 to the project timeline. Before the workflow starts, a Project Chat Intent
-Router asks the local model for a structured intent decision, then a
-registry-backed Project Action layer maps that intent to concrete behavior and
-blocks low-confidence or unsafe routes. Casual questions, status checks, and
-help messages are answered by a separate Project Chat Responder without
-Project Intake, RAG, Developer, Reviewer, or QA. The UI shows compact routing
+Router asks the local model for a structured intent and concrete action
+decision. The registry-backed Project Action layer validates and executes that
+action; it does not grow a phrase table for semantic intent detection. Casual
+questions, status checks, and help messages are answered by a separate Project
+Chat Responder without Project Intake, RAG, Developer, Reviewer, or QA. The UI shows compact routing
 metadata such as `model: project_analysis, confidence: 0.84`, plus action
-metadata such as `path_info`, `read_file`, or `analyze_project`. Read-only
+metadata such as `path_info`, `read_file`, or `analyze_project`, plus the
+response source (`action`, `model`, `vision`, `fallback`, or `workflow`). Read-only
 actions are handled by registered action handlers and validated against the selected
 project root before execution. Path requests return paths without reading file
-contents. Technical Project/Developer/QA events remain
+contents, clock/math/capability questions use deterministic read-only actions
+instead of model memory, and the current project stack is not treated as the
+assistant's full ability boundary. The React project sidebar hides stale missing-path records and
+deduplicates by project path before rendering. Technical Project/Developer/QA events remain
 available in a collapsed details panel. The sidebar can rename or remove
 registry entries without touching files on disk. Registry reads use a short
 Streamlit cache so routine rerenders do not repeatedly hit Postgres.
+Direct chat responses are grounded by source: if the LLM responder claims it
+read, wrote, tested, committed, or otherwise acted on files without an `action`
+or `workflow` result, the response is discarded and replaced with a safe
+fallback. This keeps previous task history from leaking into casual chat as if
+new work had just been performed.
+Project memory now has a compact semantic layer: each non-ephemeral project
+exchange is compressed into a bounded Postgres `project_memory_chunks` row, then
+optionally indexed into a ChromaDB `project_memory` collection. New project
+messages retrieve only project-scoped relevant memory snippets and inject that
+bounded section into router/responder/workflow context. Raw timeline remains
+available for UI history, but the model does not receive an ever-growing chat
+transcript.
+Project Chat can also accept one optional image attachment (PNG, JPEG, or WebP,
+up to 5 MB). Images use the lazy VISION capability (`qwen2.5vl:7b` by default)
+only when a picture is attached, so the core chat/coder workflow is not slowed
+down at startup. Image-only or screenshot explanation requests return a direct
+vision response. If the user explicitly asks to fix code based on the image,
+the vision summary is passed into the normal workflow as context; the image
+itself never auto-starts Developer/QA.
 Successful Project Mode runs default to a preview-only Integrator step that
 shows a unified diff and the files that would be written. Generated files are
 applied only when the user clicks the Project Mode apply button, and that apply
-event updates the project checkpoint/timeline. Automatic git commits are still
-limited to isolated generated-code runs; direct project commit/push remains
-human-gated.
+event updates the project checkpoint/timeline. The React UI receives a
+server-side apply token, shows planned files, file actions, and the unified
+diff, then calls the local apply endpoint without exposing generated file
+contents as a reusable API payload. Automatic git commits are still limited to
+isolated generated-code runs; direct project commit/push remains human-gated.
 
 Project Mode is profile-aware. A simple HTML/CSS task is routed to the
 `static_web` profile, which produces files like `index.html` and validates them
@@ -76,6 +101,16 @@ excerpts from the selected folder are included in the prompt so proposals and
 static-web edits preserve the existing project subject matter unless the user
 explicitly asks to replace it. Documentation tasks use the `docs` profile and
 produce Markdown/text files such as `README.md` or `docs/architecture.md`.
+When Project Chat admits a request as `implementation`/`modify_project`, that
+router decision is carried into the workflow so terse Python artifact requests
+such as "python class/sınıf olsun" use the Python profile rather than the
+advisory project profile.
+
+Developer output is validated before any write. If generated files are empty,
+unsupported, or syntactically invalid, the retry is a repair pass that includes
+the rejected code and validation error as feedback. If repair still fails, the
+workflow stops without writing files and the React technical panel can show the
+validation error plus rejected code for debugging.
 
 ## Technology Stack
 
@@ -91,8 +126,13 @@ All components are free and open-source (MIT / Apache 2.0).
 
 ## Deployment
 
-- **Core:** a single machine running `qwen2.5-coder:14b`. One model serves
-  multiple focused personas through CODER, REASONER, and FALLBACK capabilities.
+- **Core:** a single machine running local Qwen2.5 models. Project Chat uses
+  `qwen2.5:14b` through the CHAT capability, while code workflow agents use
+  `qwen2.5-coder:14b` through the CODER and REASONER capabilities. FALLBACK
+  defaults to the general `qwen2.5:14b` node so it stays independent of the
+  coder node — an open coder circuit can still fall back instead of failing.
+- **Optional vision:** `qwen2.5vl:7b` serves VISION lazily for image/screenshot
+  interpretation. Missing vision does not mark the core pool degraded.
 - **Current workflow:** one task at a time through a sequential LangGraph state
   machine: Project Intake -> Project Brief -> Task Classifier -> RAG ->
   Analyst -> Developer -> Reviewer -> QA -> Supervisor -> Integrator. Project
@@ -107,7 +147,9 @@ All components are free and open-source (MIT / Apache 2.0).
 # 1. Install Ollama and pull models
 brew install ollama
 ollama serve            # in a separate terminal
+ollama pull qwen2.5:14b
 ollama pull qwen2.5-coder:14b
+ollama pull qwen2.5vl:7b   # optional, enables image/screenshot analysis
 ollama pull nomic-embed-text
 
 # 2. Install Python dependencies

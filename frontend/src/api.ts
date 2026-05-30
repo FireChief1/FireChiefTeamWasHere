@@ -1,7 +1,9 @@
 import type {
   FolderListing,
   ProjectBundle,
+  ProjectApplyResponse,
   ProjectChatResponse,
+  ImageAttachmentPayload,
   ProjectRecord
 } from "./types";
 
@@ -43,8 +45,19 @@ export function sendProjectMessage(args: {
   message: string;
   maxIterations: number;
   useRag: boolean;
+  image?: ImageAttachmentPayload;
 }): Promise<ProjectChatResponse> {
   return request<ProjectChatResponse>("/api/project-chat", {
+    method: "POST",
+    body: JSON.stringify(args)
+  });
+}
+
+export function applyProjectChanges(args: {
+  projectPath: string;
+  applyToken: string;
+}): Promise<ProjectApplyResponse> {
+  return request<ProjectApplyResponse>("/api/project-apply", {
     method: "POST",
     body: JSON.stringify(args)
   });

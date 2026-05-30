@@ -14,7 +14,7 @@ from app.agents.static_web_developer import StaticWebDeveloperAgent
 from app.graph.code_utils import strip_code_fences as _strip_code_fences
 from app.graph.code_validation import validate_code_files as _validate_code_files
 from app.graph.error_boundary import node_error_boundary
-from app.graph.state import AgentState
+from app.graph.state import AgentState, FeedbackItem
 from app.llm.pool import get_pool
 
 
@@ -23,18 +23,21 @@ async def developer_node(state: AgentState) -> dict[str, Any]:
     """Run the profile-specific Developer to generate or revise code."""
     agent = _developer_for_profile(state)
     result = await agent.run(state)
-    code = {f.filename: _strip_code_fences(f.content) for f in result.files}
+    code = _code_from_result(result)
     validation_error = _validate_code_files(
         code,
         profile=state.get("task_profile", "python"),
     )
+    repair_attempted = False
 
     if validation_error:
         logger.warning(
-            f"Developer produced invalid code; retrying once: {validation_error}"
+            "Developer produced invalid code; retrying once with validation "
+            f"repair context: {validation_error}"
         )
-        result = await agent.run(state)
-        code = {f.filename: _strip_code_fences(f.content) for f in result.files}
+        repair_attempted = True
+        result = await agent.run(_validation_repair_state(state, code, validation_error))
+        code = _code_from_result(result)
         validation_error = _validate_code_files(
             code,
             profile=state.get("task_profile", "python"),
@@ -49,16 +52,58 @@ async def developer_node(state: AgentState) -> dict[str, Any]:
             "code": code,
             "dev_approach": result.approach,
             "dev_assumptions": result.assumptions,
+            "dev_repair_attempted": repair_attempted,
+            "dev_validation_error": validation_error,
+            "dev_rejected_code": code,
             "node_error": f"developer_node: {validation_error}",
             "should_abort": True,
             "status": "FAILED",
         }
 
-    return {
+    update: dict[str, Any] = {
         "code": code,
         "dev_approach": _clean_developer_approach(result.approach, result.summary),
         "dev_assumptions": result.assumptions,
     }
+    if repair_attempted:
+        update["dev_repair_attempted"] = True
+    return update
+
+
+def _code_from_result(result: Any) -> dict[str, str]:
+    """Return sanitized code content keyed by generated filename."""
+    return {f.filename: _strip_code_fences(f.content) for f in result.files}
+
+
+def _validation_repair_state(
+    state: AgentState,
+    code: dict[str, str],
+    validation_error: str,
+) -> AgentState:
+    """Build a Developer repair prompt from rejected code and validation error."""
+    feedback = list(state.get("review_feedback") or [])
+    feedback.append(
+        FeedbackItem(
+            severity="BLOCKER",
+            issue=(
+                "The generated files failed deterministic validation before "
+                f"review: {validation_error}"
+            ),
+            suggestion=(
+                "Return the same requested artifact(s) again, but make them "
+                "valid for the selected task profile. Preserve the intended "
+                "behavior, do not add tests, and fix only the validation error."
+            ),
+        )
+    )
+    repair_state: AgentState = {
+        **state,
+        "code": code,
+        "review_feedback": feedback,
+        "dev_validation_error": validation_error,
+        "dev_repair_attempted": True,
+    }
+    return repair_state
 
 
 def _clean_developer_approach(approach: str, summary: str) -> str:

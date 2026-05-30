@@ -519,6 +519,46 @@ async def test_task_classifier_node_selects_project_for_learn_project():
     assert update["task_profile"] == "project"
 
 
+async def test_task_classifier_node_selects_python_for_student_class_request():
+    update = await task_classifier_node(
+        {"task": "bir python class yaz ve öğrenciler için olsun", "mode": "project"}
+    )
+
+    assert update["task_profile"] == "python"
+    assert "Python/code artifact" in update["task_profile_reason"]
+
+
+async def test_task_classifier_node_uses_router_implementation_signal_for_python_artifact():
+    update = await task_classifier_node(
+        {
+            "task": "python sınıfı öğrenciler için olsun",
+            "mode": "project",
+            "project_chat_intent": "implementation",
+            "project_chat_action": "modify_project",
+        }
+    )
+
+    assert update["task_profile"] == "python"
+    assert "routed this as implementation" in update["task_profile_reason"]
+
+
+async def test_task_classifier_node_treats_python_artifact_as_code_in_project_mode():
+    update = await task_classifier_node(
+        {"task": "öğrenci bilgisi tutan class olsun", "mode": "project"}
+    )
+
+    assert update["task_profile"] == "python"
+    assert "Python/code artifact" in update["task_profile_reason"]
+
+
+async def test_task_classifier_node_does_not_match_student_as_learn_project():
+    update = await task_classifier_node(
+        {"task": "öğrenci bilgisi tutan class yaz", "mode": "project"}
+    )
+
+    assert update["task_profile"] == "python"
+
+
 async def test_task_classifier_node_keeps_ambiguous_project_chat_advisory():
     update = await task_classifier_node({"task": "sen kimsin", "mode": "project"})
 
@@ -696,6 +736,97 @@ async def test_developer_node_uses_docs_advisor_for_docs_profile(monkeypatch):
 
     assert set(update["code"]) == {"README.md"}
     assert "node_error" not in update
+
+
+async def test_developer_node_repairs_invalid_python_with_validation_feedback(
+    monkeypatch,
+):
+    calls = []
+
+    async def developer_run(self, state):
+        calls.append(state)
+        if len(calls) == 1:
+            return CodeOutput(
+                approach="Create the counting function.",
+                assumptions=[],
+                files=[
+                    CodeFile(
+                        filename="counting.py",
+                        content="def count_to_100(:\n",
+                    )
+                ],
+                summary="Returned invalid Python.",
+            )
+
+        feedback = state.get("review_feedback") or []
+        assert state["code"] == {"counting.py": "def count_to_100(:\n"}
+        assert feedback
+        assert "failed deterministic validation" in feedback[-1].issue
+        assert "invalid Python" in feedback[-1].issue
+        return CodeOutput(
+            approach="Fixed the syntax error.",
+            assumptions=[],
+            files=[
+                CodeFile(
+                    filename="counting.py",
+                    content=(
+                        "def count_to_100() -> None:\n"
+                        "    \"\"\"Print numbers from 1 to 100.\"\"\"\n"
+                        "    for number in range(1, 101):\n"
+                        "        print(number)\n\n\n"
+                        "if __name__ == \"__main__\":\n"
+                        "    count_to_100()\n"
+                    ),
+                )
+            ],
+            summary="Fixed counting function.",
+        )
+
+    monkeypatch.setattr(developer_step, "get_pool", lambda: object())
+    monkeypatch.setattr(developer_step.DeveloperAgent, "run", developer_run)
+
+    update = await developer_node(
+        {
+            "task": "Yeni bir Python dosyası oluştur, 1-100'e kadar saysın.",
+            "task_profile": "python",
+        }
+    )
+
+    assert update["code"]["counting.py"].startswith("def count_to_100")
+    assert update["dev_repair_attempted"] is True
+    assert "node_error" not in update
+    assert len(calls) == 2
+
+
+async def test_developer_node_exposes_rejected_code_after_failed_repair(monkeypatch):
+    async def developer_run(self, state):
+        return CodeOutput(
+            approach="Create broken code.",
+            assumptions=[],
+            files=[
+                CodeFile(
+                    filename="counting.py",
+                    content="def count_to_100(:\n",
+                )
+            ],
+            summary="Returned invalid Python.",
+        )
+
+    monkeypatch.setattr(developer_step, "get_pool", lambda: object())
+    monkeypatch.setattr(developer_step.DeveloperAgent, "run", developer_run)
+
+    update = await developer_node(
+        {
+            "task": "Yeni bir Python dosyası oluştur, 1-100'e kadar saysın.",
+            "task_profile": "python",
+        }
+    )
+
+    assert update["status"] == "FAILED"
+    assert update["should_abort"] is True
+    assert update["dev_repair_attempted"] is True
+    assert "invalid Python" in update["dev_validation_error"]
+    assert update["dev_rejected_code"] == {"counting.py": "def count_to_100(:\n"}
 
 
 def test_static_web_qa_passes_complete_page(tmp_path):

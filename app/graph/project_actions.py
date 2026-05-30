@@ -1,11 +1,14 @@
-"""Project Chat action schema, registry, policy checks, and executors."""
+"""Project Chat action schema, registry, safety checks, and executors."""
 
 from __future__ import annotations
 
+import ast
 import re
+from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Literal, Protocol
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field
 
@@ -15,6 +18,9 @@ ProjectActionName = Literal[
     "path_info",
     "list_folder",
     "read_file",
+    "current_time",
+    "calculate",
+    "assistant_capabilities",
     "analyze_project",
     "modify_project",
     "clarify",
@@ -35,6 +41,7 @@ _READABLE_EXTENSIONS = {
     ".ts",
     ".tsx",
 }
+_MAX_ARITHMETIC_EXPRESSION_LENGTH = 80
 
 
 class ProjectActionDecision(BaseModel):
@@ -84,7 +91,7 @@ class ProjectActionHandler(Protocol):
 
 
 def normalize_project_message(message: str) -> str:
-    """Normalize casual Turkish/English text for policy checks."""
+    """Normalize casual Turkish/English text for safe target resolution."""
     normalized = message.casefold().translate(
         str.maketrans(
             {
@@ -100,52 +107,6 @@ def normalize_project_message(message: str) -> str:
     return " ".join(normalized.strip().split())
 
 
-def detect_read_only_project_action(
-    message: str,
-    project_path: str,
-) -> ProjectActionDecision | None:
-    """Detect high-confidence read-only actions before the model router."""
-    text = normalize_project_message(message)
-    if not text:
-        return None
-
-    if _looks_like_path_info(text):
-        return ProjectActionDecision(
-            action="path_info",
-            target=_infer_path_target(message, project_path),
-            requires_workflow=False,
-            read_only=True,
-            confidence=0.98,
-            reason="Read-only request for a project file or folder path.",
-            routed_by="policy",
-        )
-
-    if _looks_like_file_inspection(text, project_path):
-        target = _infer_file_target(message, project_path)
-        return ProjectActionDecision(
-            action="read_file",
-            target=target,
-            requires_workflow=False,
-            read_only=True,
-            confidence=0.98,
-            reason="Read-only request to inspect or summarize a selected project file.",
-            routed_by="policy",
-        )
-
-    if _looks_like_folder_listing(text):
-        return ProjectActionDecision(
-            action="list_folder",
-            target=".",
-            requires_workflow=False,
-            read_only=True,
-            confidence=0.98,
-            reason="Read-only request to list the selected folder contents.",
-            routed_by="policy",
-        )
-
-    return None
-
-
 def action_from_chat_decision(
     *,
     message: str,
@@ -155,42 +116,28 @@ def action_from_chat_decision(
     reason: str,
     routed_by: str,
     project_path: str,
+    action_name: str | None = None,
+    action_target: str | None = None,
 ) -> ProjectActionDecision:
     """Convert a router intent into a concrete product action."""
     route_source: ProjectActionRouteSource = (
         routed_by if routed_by in {"policy", "model", "fallback"} else "fallback"
     )
-    target = ""
-    action: ProjectActionName
-    read_only = True
-
-    if intent == "folder_listing":
-        action = "list_folder"
-        target = "."
-    elif intent == "file_inspection":
-        action = "read_file"
-        target = _infer_file_target(message, project_path)
-    elif intent == "path_info":
-        action = "path_info"
-        target = _infer_path_target(message, project_path)
-    elif intent == "status":
-        action = "project_status"
-    elif intent in {"conversation", "help"}:
-        action = "direct_chat"
-    elif intent == "project_analysis":
-        action = "analyze_project"
-        read_only = False
-    elif intent == "implementation":
-        action = "modify_project"
-        read_only = False
-    else:
-        action = "clarify"
+    default_action = _action_for_intent(intent)
+    action = _normalize_action_name(action_name) or default_action
+    if intent == "help" and action == "direct_chat":
+        action = default_action
+    if _requires_workflow(action) != should_run_workflow:
+        action = default_action
+    target = action_target or _target_for_action(action, message, project_path)
+    requires_workflow = _requires_workflow(action)
+    read_only = not requires_workflow
 
     return validate_project_action(
         ProjectActionDecision(
             action=action,
             target=target,
-            requires_workflow=should_run_workflow,
+            requires_workflow=requires_workflow,
             read_only=read_only,
             confidence=confidence,
             reason=reason,
@@ -332,117 +279,215 @@ class _PathInfoAction:
         return _compose_path_info_response(message, root, action.target)
 
 
+class _CurrentTimeAction:
+    name: ProjectActionName = "current_time"
+    read_only = True
+
+    def validate(
+        self,
+        action: ProjectActionDecision,
+        root: Path,
+    ) -> ProjectActionDecision:
+        del root
+        return action
+
+    def execute(
+        self,
+        action: ProjectActionDecision,
+        message: str,
+        root: Path,
+    ) -> str | None:
+        del action, message, root
+        return _compose_current_time_response()
+
+
+class _CalculateAction:
+    name: ProjectActionName = "calculate"
+    read_only = True
+
+    def validate(
+        self,
+        action: ProjectActionDecision,
+        root: Path,
+    ) -> ProjectActionDecision:
+        del root
+        if not action.target:
+            return action
+        if _safe_arithmetic_result(action.target) is None:
+            return _blocked(action, "Hesaplanacak ifadeyi güvenli şekilde okuyamadım.")
+        return action
+
+    def execute(
+        self,
+        action: ProjectActionDecision,
+        message: str,
+        root: Path,
+    ) -> str | None:
+        del root
+        expression = action.target or _extract_arithmetic_expression(message)
+        result = _safe_arithmetic_result(expression)
+        if result is None:
+            return "Hesaplanacak ifadeyi netleştirir misin?"
+        return f"`{expression}` sonucu: **{_format_number(result)}**"
+
+
+class _AssistantCapabilitiesAction:
+    name: ProjectActionName = "assistant_capabilities"
+    read_only = True
+
+    def validate(
+        self,
+        action: ProjectActionDecision,
+        root: Path,
+    ) -> ProjectActionDecision:
+        del root
+        return action
+
+    def execute(
+        self,
+        action: ProjectActionDecision,
+        message: str,
+        root: Path,
+    ) -> str | None:
+        del action, message, root
+        return (
+            "Sadece HTML ile sınırlı değilim. Şu an bu projede en güvenli "
+            "desteklediğim çıktılar: Python modülleri, statik HTML/CSS/vanilla "
+            "JavaScript, Markdown/dokümantasyon ve proje analizi/öneri "
+            "çıktıları. Seçili projenin stack'i sadece bağlamdır; benim genel "
+            "kapasitemi tek başına sınırlamaz."
+        )
+
+
 _PROJECT_ACTION_REGISTRY: dict[ProjectActionName, ProjectActionHandler] = {
     "path_info": _PathInfoAction(),
     "list_folder": _ListFolderAction(),
     "read_file": _ReadFileAction(),
+    "current_time": _CurrentTimeAction(),
+    "calculate": _CalculateAction(),
+    "assistant_capabilities": _AssistantCapabilitiesAction(),
 }
 
 
-def _looks_like_path_info(text: str) -> bool:
-    if _has_change_terms(text):
-        return False
-
-    path_terms = (
-        "path",
-        "filepath",
-        "file path",
-        "konum",
-        "nerede",
-        "yol",
-        "yolu",
-        "yolunu",
+def _normalize_action_name(action_name: str | None) -> ProjectActionName | None:
+    allowed: tuple[ProjectActionName, ...] = (
+        "direct_chat",
+        "project_status",
+        "path_info",
+        "list_folder",
+        "read_file",
+        "current_time",
+        "calculate",
+        "assistant_capabilities",
+        "analyze_project",
+        "modify_project",
+        "clarify",
     )
-    target_terms = (
-        "dosya",
-        "dosyasi",
-        "file",
-        "folder",
-        "html",
-        "index",
-        "klasor",
-        "project",
-        "proje",
-        "readme",
-        "repo",
+    if action_name in allowed:
+        return action_name  # type: ignore[return-value]
+    return None
+
+
+def _action_for_intent(intent: str) -> ProjectActionName:
+    actions_by_intent: dict[str, ProjectActionName] = {
+        "folder_listing": "list_folder",
+        "file_inspection": "read_file",
+        "path_info": "path_info",
+        "status": "project_status",
+        "conversation": "direct_chat",
+        "help": "assistant_capabilities",
+        "project_analysis": "analyze_project",
+        "implementation": "modify_project",
+    }
+    return actions_by_intent.get(intent, "clarify")
+
+
+def _target_for_action(
+    action: ProjectActionName,
+    message: str,
+    project_path: str,
+) -> str:
+    if action == "list_folder":
+        return "."
+    if action == "read_file":
+        return _infer_file_target(message, project_path)
+    if action == "path_info":
+        return _infer_path_target(message, project_path)
+    if action == "calculate":
+        return _extract_arithmetic_expression(message)
+    return ""
+
+
+def _requires_workflow(action: ProjectActionName) -> bool:
+    return action in {"analyze_project", "modify_project"}
+
+
+def _compose_current_time_response(now: datetime | None = None) -> str:
+    current = now or datetime.now(ZoneInfo("Europe/Istanbul"))
+    return (
+        f"Saat şu anda {current:%H:%M} (Europe/Istanbul).\n\n"
+        f"Tarih: {current:%d/%m/%Y}."
     )
-    return any(term in text for term in path_terms) and any(
-        term in text for term in target_terms
-    )
 
 
-def _looks_like_folder_listing(text: str) -> bool:
-    words = set(text.split())
-    if _has_change_terms(text):
-        return False
-
-    file_terms = ("dosya", "file", "files")
-    folder_terms = ("klasor", "folder", "directory", "dizin", "repo")
-    list_terms = ("var", "liste", "list", "goster", "show", "neler", "hangi")
-    has_list_signal = any(term in text for term in list_terms) or "ls" in words
-    has_target = any(term in text for term in file_terms + folder_terms)
-    if has_target and has_list_signal:
-        return True
-    return any(term in text for term in folder_terms) and (
-        "ne var" in text or "neler var" in text
-    )
+def can_calculate_message(message: str) -> bool:
+    """Return True when a chat message contains a simple arithmetic expression."""
+    return bool(_extract_arithmetic_expression(message))
 
 
-def _looks_like_file_inspection(text: str, project_path: str) -> bool:
-    if _has_change_terms(text):
-        return False
-
-    inspection_terms = (
-        "ac",
-        "anlat",
-        "icerik",
-        "icerigi",
-        "oku",
-        "konu",
-        "nedir",
-        "ozet",
-        "summary",
-        "read",
-        "open",
-        "content",
-        "explain",
-    )
-    file_terms = (
-        "dosya",
-        "dosyasi",
-        "file",
-        "html",
-        "index",
-        ".html",
-        ".md",
-        ".txt",
-        "readme",
-    )
-    if any(term in text for term in file_terms) and any(
-        term in text for term in inspection_terms
-    ):
-        return True
-
-    if any(term in text for term in ("icerigi", "icerik", "anlat", "oku", "ozet")):
-        return _single_readable_file(project_path) is not None
-    return False
+def _extract_arithmetic_expression(message: str) -> str:
+    """Extract a bounded arithmetic expression from a natural-language message."""
+    token_pattern = r"\d+(?:[.,]\d+)?|[()+\-*/]"
+    tokens = re.findall(token_pattern, message)
+    number_count = sum(1 for token in tokens if re.search(r"\d", token))
+    operator_count = sum(1 for token in tokens if token in {"+", "-", "*", "/"})
+    if number_count < 2 or operator_count < 1:
+        return ""
+    expression = " ".join(token.replace(",", ".") for token in tokens)
+    expression = re.sub(r"\s+", " ", expression).strip()
+    if len(expression) > _MAX_ARITHMETIC_EXPRESSION_LENGTH:
+        return ""
+    if _safe_arithmetic_result(expression) is None:
+        return ""
+    return expression
 
 
-def _has_change_terms(text: str) -> bool:
-    return any(
-        term in text
-        for term in (
-            "guncelle",
-            "duzelt",
-            "degistir",
-            "sil",
-            "olustur",
-            "yaz",
-            "ekle",
-            "commit",
-            "push",
-        )
-    )
+def _safe_arithmetic_result(expression: str) -> float | None:
+    if not expression or len(expression) > _MAX_ARITHMETIC_EXPRESSION_LENGTH:
+        return None
+    try:
+        tree = ast.parse(expression, mode="eval")
+        return float(_eval_arithmetic_node(tree.body))
+    except (ArithmeticError, SyntaxError, TypeError, ValueError):
+        return None
+
+
+def _eval_arithmetic_node(node: ast.AST) -> float:
+    if isinstance(node, ast.Constant) and isinstance(node.value, int | float):
+        return float(node.value)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        value = _eval_arithmetic_node(node.operand)
+        return value if isinstance(node.op, ast.UAdd) else -value
+    if isinstance(node, ast.BinOp):
+        left = _eval_arithmetic_node(node.left)
+        right = _eval_arithmetic_node(node.right)
+        if isinstance(node.op, ast.Add):
+            return left + right
+        if isinstance(node.op, ast.Sub):
+            return left - right
+        if isinstance(node.op, ast.Mult):
+            return left * right
+        if isinstance(node.op, ast.Div):
+            if right == 0:
+                raise ArithmeticError("division by zero")
+            return left / right
+    raise ValueError("unsupported arithmetic expression")
+
+
+def _format_number(value: float) -> str:
+    if value.is_integer():
+        return str(int(value))
+    return f"{value:.10g}"
 
 
 def _project_root_or_error(project_path: str) -> Path | str:

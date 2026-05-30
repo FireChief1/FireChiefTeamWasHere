@@ -86,11 +86,20 @@ class AgentState(TypedDict, total=False):
         project_test_commands: Detected automated verification commands.
         project_risks: Project-level risks inferred from files and git state.
         project_brief_files: Config files read to build the project brief.
-        project_memory: Previous project registry/checkpoint context.
+        project_memory: Previous project registry/checkpoint context, including
+            bounded compacted/semantic memory when available.
+        project_chat_intent: Project Chat router intent that admitted workflow.
+        project_chat_action: Concrete Project Chat action that admitted workflow.
+        project_chat_route_source: Whether the route came from policy/model/fallback.
+        project_chat_confidence: Router confidence for this workflow admission.
+        project_vision_context: Optional analysis of an attached image/screenshot.
         plan: The ordered implementation steps from the Analyst.
         code: The generated source files, keyed by filename.
         dev_approach: The Developer's explanation of how it approached the task.
         dev_assumptions: Assumptions and uncertainties the Developer noted.
+        dev_repair_attempted: True when Developer retried with validation feedback.
+        dev_validation_error: Deterministic validation error from Developer output.
+        dev_rejected_code: Invalid generated files kept for technical debugging.
         rag_context: Coding-standard chunks retrieved for the current step.
         rag_sources: The document names the RAG chunks were retrieved from.
         rag_status: Whether RAG was retrieved, empty, disabled, or unavailable.
@@ -144,10 +153,18 @@ class AgentState(TypedDict, total=False):
     project_risks: list[str]
     project_brief_files: list[str]
     project_memory: str
+    project_chat_intent: str
+    project_chat_action: str
+    project_chat_route_source: str
+    project_chat_confidence: float
+    project_vision_context: str
     plan: list[str]
     code: dict[str, str]
     dev_approach: str
     dev_assumptions: list[str]
+    dev_repair_attempted: bool
+    dev_validation_error: str
+    dev_rejected_code: dict[str, str]
     rag_context: list[str]
     rag_sources: list[str]
     rag_status: Literal["disabled", "retrieved", "empty", "unavailable"]

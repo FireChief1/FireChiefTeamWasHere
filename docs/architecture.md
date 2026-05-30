@@ -37,19 +37,24 @@ The core, demo-critical deployment runs entirely on one machine.
 │ Streamlit legacy UI                   │
 │ ChromaDB (RAG)                        │
 │ MCP servers (filesystem, shell, git)  │
-│ Ollama → qwen2.5-coder:14b            │
+│ Ollama → qwen2.5:14b                  │
+│        → qwen2.5-coder:14b            │
+│        → qwen2.5vl:7b (lazy optional) │
 │                                       │
-│ Multiple agent personas share the     │
-│ same model. CODER, REASONER and       │
-│ FALLBACK capabilities all resolve to  │
-│ this single node.                     │
+│ CHAT resolves to the general model.   │
+│ CODER, REASONER and FALLBACK resolve  │
+│ to the coder-specialized model.       │
+│ VISION resolves only when an image is  │
+│ attached; it is not eagerly warmed.    │
 └──────────────────────────────────────┘
 ```
 
 An agent is defined by its system prompt (persona), its tools, the slice of
 state it reads, and its output schema — not by the model or machine it runs
-on. One model serving many focused personas is still a complete multi-agent
-system.
+on. Multiple focused personas can share a configured local model when that is
+the right tradeoff, but Project Chat is now separated from coding work through
+the CHAT capability. Optional image/screenshot analysis is separated again
+through VISION so the vision model never replaces the router or coder model.
 
 ### Optional Scale-Out (bonus)
 
@@ -61,11 +66,16 @@ If the core works and time permits, worker machines can be added to the pool as 
    ▼          ▼          ▼
  Mac        PC1        PC2
  orchestr.  CODER      REASONER
- +FALLBACK  qwen2.5-   qwen2.5:7b-
-            coder:7b   instruct
+ CHAT       qwen2.5-   qwen2.5:7b-
+ +FALLBACK  coder:7b   instruct
 ```
 
-All intended LLMs are from the Qwen2.5 family (Apache 2.0). In the single-machine core, one model serializes inference for all agent personas.
+All intended generation LLMs are from the Qwen2.5 family (Apache 2.0). In the
+single-machine core, `qwen2.5:14b` handles Project Chat routing/responses and
+`qwen2.5-coder:14b` handles code workflow capabilities. `qwen2.5vl:7b` is an
+optional lazy VISION node for attached images. If configured model tags are
+identical, `build_default_pool()` groups those capabilities into one Ollama
+node.
 
 ## Software Layers
 
@@ -96,8 +106,8 @@ The orchestrator software is organized in five layers. Each layer calls only the
 
 | Component | Type | Responsibility |
 |-----------|------|----------------|
-| Project Chat Router | LLM router + policy | Decide whether a Project Mode chat message should be answered directly or sent into the workflow |
-| Project Action Router | Registry + policy | Convert chat intent into concrete actions such as `path_info`, `read_file`, `list_folder`, `analyze_project`, or `modify_project`; registered handlers validate and execute read-only actions |
+| Project Chat Router | LLM router + safety policy | Decide whether a Project Mode chat message should be answered directly or sent into the workflow |
+| Project Action Router | Registry + safety policy | Convert chat intent into concrete actions such as `path_info`, `read_file`, `list_folder`, `current_time`, `calculate`, `assistant_capabilities`, `analyze_project`, or `modify_project`; registered handlers validate and execute read-only actions |
 | Project Chat Responder | LLM agent | Answer direct chat/help/status/clarify messages without starting Developer/QA |
 | Project Intake | Deterministic node | Read-only repository scan for Project Mode |
 | Project Brief | Deterministic node | Detect stack, entrypoints, test commands, and risks |
@@ -121,13 +131,15 @@ The Supervisor and Integrator are deterministic — they make no LLM judgment ca
 
 Project Mode chat first passes through the Project Chat Router. The router
 uses the local model as the primary semantic classifier, while a narrow
-deterministic guard handles empty messages and high-confidence read-only file
-actions. The resulting intent is converted into a concrete Project Action
+deterministic guard handles empty messages and safety normalization. The
+resulting intent is converted into a concrete Project Action
 Decision. A small action registry owns action-specific validation and
-execution. Read-only actions such as `path_info`, `list_folder`, and
-`read_file` are validated against the selected project root and executed
-directly; only `analyze_project` and `modify_project` enter the LangGraph
-workflow below.
+execution. Read-only actions such as `path_info`, `list_folder`, `read_file`,
+`current_time`, `calculate`, and `assistant_capabilities` are executed directly.
+Project-file actions are validated against the selected project root, while
+clock/math/capability answers come from deterministic handlers instead of model
+memory. Only `analyze_project` and `modify_project`
+enter the LangGraph workflow below.
 
 ```
 PROJECT MODE CHAT
@@ -141,13 +153,14 @@ PROJECT MODE CHAT
 ┌──────────────────────┐
 │ PROJECT ACTION       │  direct_chat, project_status,
 │ ROUTER + POLICY      │  path_info, list_folder,
-│                      │  read_file,
+│                      │  read_file, current_time,
+│                      │  calculate, capabilities,
 │                      │  analyze_project, modify_project
 └──────────┬───────────┘
            │
    ┌───────┴──────────────────────────────────────┐
    ▼                                              ▼
-direct_chat/status/path_info/list_folder/read_file   analyze_project/modify_project
+direct/status/path_info/list/read/time/calc/capabilities   analyze_project/modify_project
    │                                              │
    ▼                                              ▼
 ┌──────────────────────┐                         LangGraph workflow
@@ -235,7 +248,13 @@ Every node function is wrapped by the `@node_error_boundary` decorator. It catch
 
 ### Capability Routing with Degraded Mode
 
-`LLMPool` routes by capability (CODER, REASONER, FALLBACK), not by round-robin. Each node has a health state and a circuit breaker. If a configured specialized node is unavailable and a fallback node is usable, requests route to fallback. The Streamlit UI records and displays degraded mode when the current pool cannot serve every specialized capability. (EC-01, EC-02, EC-03)
+`LLMPool` routes by capability (CHAT, CODER, REASONER, VISION, FALLBACK), not
+by round-robin. Each node has a health state and a circuit breaker. If a
+configured specialized text node is unavailable and a fallback node is usable,
+requests route to fallback. VISION never falls back to a text-only model and is
+not part of core degraded-mode checks. The UI records and displays degraded mode
+when the current pool cannot serve every required text capability. (EC-01,
+EC-02, EC-03)
 
 ### Project Chat Intent Routing
 
@@ -245,23 +264,40 @@ Chat Router runs before LangGraph and returns structured intents:
 `project_analysis`, `implementation`, or `clarify`. Natural-language intent
 classification is model-first: casual
 Turkish/English, typos, and project-analysis phrasing are interpreted by the
-local REASONER model through structured output rather than by a large phrase
+local CHAT model through structured output rather than by a large phrase
 table. A deterministic policy layer still handles non-semantic safety rules:
 empty messages, invalid workflow flags, model failures, and confidence below
 the product threshold.
 
-After intent routing, Project Action Router maps the intent to a concrete
-action schema and dispatches executable actions through a registry. Examples:
-`conversation -> direct_chat`,
-`folder_listing -> list_folder`, `file_inspection -> read_file`,
-`path_info -> path_info`, `project_analysis -> analyze_project`, and
-`implementation -> modify_project`.
+After intent routing, the model-selected action schema is dispatched through a
+Project Action Registry. The code does not maintain a growing natural-language
+phrase table for semantic intent detection; it validates and executes actions
+selected by the router. Examples: `conversation -> direct_chat`,
+`folder_listing -> list_folder`, `file_inspection -> read_file`, `path_info ->
+path_info`, clock/date questions -> `current_time`, `project_analysis ->
+analyze_project`, capability questions -> `assistant_capabilities`, simple
+arithmetic -> `calculate`, and `implementation -> modify_project`.
 Registered read-only handlers are checked against the selected project root,
 readable file extensions, and size limits before execution. Direct routes are saved as
 project timeline messages when the registry is available and never enter
 Project Intake, Developer, Reviewer, QA, file writes, commits, or pushes. The
-UI exposes both the final route and action metadata, for example
+LLM direct responder receives a reduced history block so casual chat cannot
+treat the previous task as the current request. Its response is also grounded
+by source: without an action or workflow result, claims that it read, wrote,
+tested, committed, pushed, or otherwise changed project files are rejected and
+replaced by a safe fallback. The UI exposes both the final route and action
+metadata, for example
 `model: project_analysis, confidence: 0.84` and `action: analyze_project`.
+It also records `responseSource` so the UI can distinguish an action executor,
+LLM responder, vision response, fallback, or full workflow response. If a user
+attaches a PNG/JPEG/WebP image, the API validates size/type and asks VISION for
+a bounded screenshot/image summary. Direct image questions return that summary
+without Project Intake or Developer/QA. If the same message is explicitly routed
+as `implementation -> modify_project`, the vision summary is copied into
+`project_vision_context` and becomes read-only workflow context; the attachment
+alone never starts code changes. The React project sidebar filters stale
+missing-path records and deduplicates projects by normalized path before
+rendering.
 
 ### Warm-Up Phase
 
@@ -269,7 +305,15 @@ Before the workflow starts, a warm-up step sends a trivial prompt to each config
 
 ### Structured Output with Fail-Safe Fallback
 
-Agents that must return structured data use `with_structured_output()`. The Developer node validates the returned files, retries once if the output is empty, unsupported, or syntactically invalid, and then fails honestly if the second attempt is still unusable. Reviewer structured-output failures are caught by the node error boundary, producing a FAILED workflow rather than an accidental approval. (EC-08, EC-10)
+Agents that must return structured data use `with_structured_output()`. The
+Developer node validates the returned files. If the output is empty,
+unsupported, or syntactically invalid, the second attempt is a validation-aware
+repair pass: the Developer receives the rejected code plus the deterministic
+validation error as BLOCKER feedback. If the repair output is still unusable,
+the workflow fails honestly and keeps the rejected code in technical state for
+debugging instead of writing it. Reviewer structured-output failures are caught
+by the node error boundary, producing a FAILED workflow rather than an
+accidental approval. (EC-08, EC-10)
 
 The Analyst plan is also validated. Empty or whitespace-only plan steps are
 discarded; if the plan is still empty after one retry, the workflow uses a
@@ -325,18 +369,32 @@ registry data through cascading foreign keys and never deletes files on disk.
 Registry reads are wrapped in a short Streamlit cache and are cleared after
 writes. The next run receives a compact `project_memory` block containing the
 latest known brief, stack, test commands, risks, last task, recent checkpoints,
-and recent timeline events.
+recent timeline events, and compacted memory chunks.
+
+Project memory has two layers. Postgres is the durable source of truth through
+`project_memory_chunks`, which stores bounded summaries of non-ephemeral
+project exchanges with kind, importance, source metadata, and a dedupe key.
+ChromaDB holds a secondary `project_memory` collection used only for semantic
+retrieval; if embeddings or Chroma are unavailable, the system keeps running
+with recent/checkpoint memory. New project messages retrieve only memories
+scoped to the selected `project_path`, cap the prompt section, and append it as
+`Relevant semantic project memory`. Ephemeral answers such as current time or
+simple arithmetic are deliberately not compacted into long-term memory.
 
 On a successful Project Mode run, the Integrator is preview-only by default:
 it records `integration_planned_files`, `integration_file_actions`, and a
-unified `integration_diff`. The UI stores the pending apply payload in session
-state and writes generated files only when the user clicks the apply button.
-The write step uses the same MCP path boundary and records
-`integration_written_files`. The Project Registry then marks the matching
-checkpoint as applied and appends a `project_apply` timeline event. It does not
-auto-commit or push the target project; those actions remain human-gated. The
-generated-code mode continues to write into isolated `workspace/task-{id}/`
-folders and create local commits there.
+unified `integration_diff`. Streamlit stores the pending apply payload in
+session state. The React API stores generated file content in a short-lived
+server-side pending-apply registry and returns only a token plus planned files,
+file actions, and diff metadata to the browser. The React UI writes generated
+files only after the user clicks the apply button and calls
+`POST /api/project-apply`; typing "Değişiklikleri uygula" into chat is treated
+as a normal message, not as an implicit write. The write step uses the same MCP
+path boundary and records `integration_written_files`. The Project Registry
+then marks the matching checkpoint as applied and appends a `project_apply`
+timeline event. It does not auto-commit or push the target project; those
+actions remain human-gated. The generated-code mode continues to write into
+isolated `workspace/task-{id}/` folders and create local commits there.
 
 ### Task Profiles
 
@@ -359,6 +417,12 @@ as a Python module. Conversely, "Analyze this project and propose the next safe
 improvement" is routed to `project`, where the Developer acts as a project
 advisor and the QA node blocks source files such as `index.html`, `.css`, `.js`,
 or `.py`.
+
+Project Chat route metadata is part of profile selection. When the model router
+admits a message as `implementation` with action `modify_project`, that signal
+is carried into `AgentState` before the workflow starts. This keeps terse or
+typo-heavy artifact requests such as "python class/sınıf olsun" in the Python
+profile instead of falling back to advisory `PROJECT_PROPOSAL.md` output.
 
 ### Domain-Aware RAG
 
@@ -394,8 +458,16 @@ AgentState fields:
   project_risks     list[str]      risks from files, git state, profile state
   project_brief_files list[str]    manifests/configs read for the brief
   project_memory    str            saved registry/checkpoint context
+  project_chat_intent str          Project Chat router intent for workflow runs
+  project_chat_action str          concrete action, e.g. modify_project
+  project_chat_route_source str    policy, model, or fallback
+  project_chat_confidence float    router confidence for the workflow admission
+  project_vision_context str       optional VISION summary for attached images
   plan              list[str]      from Analyst
   code              dict[str,str]  filename -> content, from Developer
+  dev_repair_attempted bool        true when validation-aware repair ran
+  dev_validation_error str         Developer output validation detail
+  dev_rejected_code dict[str,str]  invalid code retained for technical debug
   rag_context       list[str]      retrieved chunks
   rag_status        str            retrieved, empty, disabled, or unavailable
   rag_message       str            user-facing RAG status detail
@@ -430,7 +502,8 @@ Agent: pool.generate(prompt, capability=CODER)
                  ▼
         ┌────────────────────┐
         │ filter healthy     │
-        │ nodes for CODER    │
+        │ nodes for requested│
+        │ capability         │
         └────────┬───────────┘
                  │
         ┌────────┴────────┐

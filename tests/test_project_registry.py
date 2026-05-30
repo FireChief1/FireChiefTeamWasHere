@@ -11,11 +11,13 @@ from app.project_registry import (
     delete_project,
     load_project,
     load_project_checkpoints,
+    load_project_memory_chunks,
     load_project_timeline,
     open_project,
     project_memory_summary,
     record_project_apply,
     record_project_checkpoint,
+    record_project_memory_chunk,
     record_project_message,
     rename_project,
 )
@@ -151,6 +153,31 @@ def test_project_registry_records_project_conversation_messages(tmp_path):
     assert timeline[1]["metadata"]["task_id"] == "chat-test"
     assert "Bu projeyi Codex gibi incele." in memory
     assert "Projeyi okudum" in memory
+
+
+def test_project_registry_records_compacted_memory_chunks(tmp_path):
+    project_path = tmp_path / "memory-project"
+    project_path.mkdir()
+    assert open_project(project_path) is not None
+
+    chunk = record_project_memory_chunk(
+        project_path=project_path,
+        kind="user_preference",
+        content="Kullanıcı semantic retrieval ve compaction istiyor.",
+        source_event_ids=[1, 2],
+        importance=5,
+        metadata={"source": "test"},
+    )
+
+    chunks = load_project_memory_chunks(project_path, limit=5)
+    memory = project_memory_summary(load_project(project_path), [], [], chunks)
+
+    assert chunk is not None
+    assert chunks[0]["kind"] == "user_preference"
+    assert chunks[0]["source_event_ids"] == [1, 2]
+    assert chunks[0]["importance"] == 5
+    assert "Compacted project memory" in memory
+    assert "semantic retrieval" in memory
 
 
 def test_project_registry_renames_and_deletes_project(tmp_path):

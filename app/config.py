@@ -24,10 +24,17 @@ class Settings(BaseSettings):
     # --- Ollama ---
     ollama_base_url: str = "http://localhost:11434"
 
-    # --- Models (single-machine core: one model serves every capability) ---
+    # --- Models ---
+    chat_model: str = "qwen2.5:14b"
     coder_model: str = "qwen2.5-coder:14b"
     reasoner_model: str = "qwen2.5-coder:14b"
-    fallback_model: str = "qwen2.5-coder:14b"
+    # Fallback intentionally defaults to the general chat model rather than the
+    # coder model. Sharing the coder tag would group fallback onto the same node
+    # as CODER/REASONER, so an open coder circuit would leave no usable fallback.
+    # Pointing it at the (already required) chat model gives a genuinely
+    # independent node to fall back to at no extra model download.
+    fallback_model: str = "qwen2.5:14b"
+    vision_model: str = "qwen2.5vl:7b"
     embedding_model: str = "nomic-embed-text"
 
     # --- LLM pool behavior ---
@@ -36,6 +43,15 @@ class Settings(BaseSettings):
     max_retries: int = 3
     circuit_breaker_threshold: int = 3
     health_check_interval: int = 15
+    # Context window passed to Ollama. Without this, Ollama uses its small
+    # default (commonly 2048-4096 tokens) and silently truncates large
+    # project-mode prompts (brief + file excerpts + RAG + memory + diff) from
+    # the front, which can drop the system prompt or the task itself.
+    llm_num_ctx: int = 8192
+    # Upper bound on tokens generated per call. Bounds pathological repetition
+    # loops and runaway output. Generous for this project's small modules; raise
+    # for very large multi-file generation, or set to -1 to disable the cap.
+    llm_num_predict: int = 4096
 
     # --- Workflow limits ---
     max_iterations: int = 3

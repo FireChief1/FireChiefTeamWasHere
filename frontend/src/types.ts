@@ -48,11 +48,18 @@ export type RouteDecision = {
   requiresWorkflow?: boolean;
   safetyStatus?: string;
   safetyMessage?: string;
+  responseSource?: string;
   shouldRunWorkflow: boolean;
   confidence: number;
   reason: string;
   routedBy: string;
   label: string;
+};
+
+export type ImageAttachmentPayload = {
+  name: string;
+  mimeType: string;
+  data: string;
 };
 
 export type ProjectRun = {
@@ -66,12 +73,34 @@ export type ProjectRun = {
   writtenFiles: string[];
   previewOnly: boolean;
   diff: string;
+  pendingApply?: PendingProjectApply | null;
   nodeError: string | null;
+  devRepairAttempted: boolean;
+  devValidationError: string | null;
+  rejectedCode: Record<string, string>;
   tests: {
     passed: number;
     failed: number;
     total: number;
     output: string;
+  };
+};
+
+export type PendingProjectApply = {
+  token: string;
+  taskId: string;
+  targetPath: string;
+  mcpRoot: string;
+  plannedFiles: string[];
+  fileActions: Array<{ file: string; action: string }>;
+  diff: string;
+};
+
+export type ProjectApplyResponse = ProjectBundle & {
+  apply: {
+    targetPath: string;
+    mcpRoot: string;
+    writtenFiles: string[];
   };
 };
 
