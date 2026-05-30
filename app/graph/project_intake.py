@@ -29,7 +29,7 @@ _PROJECT_FALLBACK_FILES = (
     "app/graph/workflow.py",
     "app/graph/nodes.py",
     "app/graph/state.py",
-    "app/ui/streamlit_app.py",
+    "app/api/server.py",
 )
 _PROJECT_STOPWORDS = {
     "about",

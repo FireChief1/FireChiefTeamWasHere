@@ -49,7 +49,7 @@ Each edge case lists the scenario, its impact, the resolution built into the arc
 
 **Resolution (PARTIAL):** The pool enters degraded mode when a specialized capability has no usable node. If a fallback node is configured and healthy, requests can route there; if the only node is down, the workflow fails honestly. The UI surfaces degraded mode in the run state and final result.
 
-**Implemented in:** `llm/pool.py` — `pick_node` returns fallback for any capability when no specialized node is healthy; `is_degraded()` flag; UI banner in `ui/streamlit_app.py`.
+**Implemented in:** `llm/pool.py` — `pick_node` returns fallback for any capability when no specialized node is healthy; `is_degraded()` flag; degraded state surfaced through `api/project_service.py` to the React UI.
 
 ### EC-04: Ollama cold start (model not in VRAM)
 
@@ -289,7 +289,7 @@ Each edge case lists the scenario, its impact, the resolution built into the arc
 
 **Resolution (HANDLED):** The retriever degrades gracefully: if the collection is empty or unavailable, retrieval returns an empty result with status metadata and agents proceed with no RAG context. The workflow records `rag_status`, `rag_message`, and `rag_chunk_count`; the UI shows whether RAG was retrieved, empty, disabled, or unavailable. There is no blocking startup check.
 
-**Implemented in:** `rag/retriever.py`, `graph/nodes.py`, `ui/streamlit_app.py`.
+**Implemented in:** `rag/retriever.py`, `graph/nodes.py`, `api/project_service.py`.
 
 ### EC-27: Embedding model unavailable
 
@@ -307,9 +307,9 @@ Each edge case lists the scenario, its impact, the resolution built into the arc
 
 **Impact:** IMPORTANT — the workflow runs on nothing.
 
-**Resolution (HARDENED):** Input is validated at the UI boundary before the workflow starts. Empty or whitespace-only input is rejected with an inline error message; the workflow is not invoked. In Project Mode, non-empty chat first passes through the Project Chat Router and Project Action Router. Direct conversation, help, status, path-info, folder-listing, file-inspection, and clarify routes are answered without starting Project Intake, Developer, Reviewer, QA, file writes, commits, or pushes.
+**Resolution (HARDENED):** Input is validated at the API boundary before the workflow starts. Empty or whitespace-only input is rejected with an error; the workflow is not invoked. In Project Mode, non-empty chat first passes through the Project Chat Router and Project Action Router. Direct conversation, help, status, path-info, folder-listing, file-inspection, and clarify routes are answered without starting Project Intake, Developer, Reviewer, QA, file writes, commits, or pushes.
 
-**Implemented in:** `ui/streamlit_app.py`, `api/project_service.py`, `graph/project_chat_intent.py`, `graph/project_actions.py`, `agents/project_chat_router.py`, `agents/project_chat_responder.py`.
+**Implemented in:** `api/project_service.py`, `graph/project_chat_intent.py`, `graph/project_actions.py`, `agents/project_chat_router.py`, `agents/project_chat_responder.py`.
 
 ### EC-29: UI disconnects mid-task
 

@@ -29,10 +29,8 @@ The deterministic Integrator commits generated-code runs to a local branch,
 while Project Mode uses preview/apply and does not commit or push the selected
 project automatically.
 
-The primary UI is being migrated to a security-first **React + TypeScript +
-Vite** workspace backed by a small local Python JSON API. The older Streamlit
-surface remains available during the migration, but new Project Mode UI work
-lands in `frontend/` first.
+The UI is a security-first **React + TypeScript + Vite** workspace backed by a
+small local Python JSON API.
 
 The UI includes a **Project Mode** foundation. In that mode the workflow
 accepts a target project folder, starts with Project Intake and Project Brief
@@ -174,9 +172,6 @@ python -m app.api.server
 # 7. Install and run the React UI
 npm --prefix frontend ci --ignore-scripts
 npm --prefix frontend run dev
-
-# Legacy Streamlit UI remains available during migration
-streamlit run app/ui/streamlit_app.py
 ```
 
 Open the React workspace at `http://127.0.0.1:5173`. The local API listens on
@@ -197,8 +192,7 @@ app/
 ├── graph/           # LangGraph workflow, supervisor, integrator
 ├── rag/             # ChromaDB ingestion and retrieval
 ├── tools/           # MCP tool integration
-├── history.py       # Postgres-backed run history
-└── ui/              # Streamlit interface
+└── history.py       # Postgres-backed run history
 frontend/            # React + TypeScript + Vite project workspace UI
 docs/                # engineering standards + architecture (RAG knowledge base)
 tests/               # test suite

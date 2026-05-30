@@ -229,13 +229,13 @@ def test_project_focus_terms_remove_generic_words():
 
 
 def test_project_relevant_files_prefers_matches_then_fallbacks():
-    files = ["README.md", "app/graph/nodes.py", "app/ui/streamlit_app.py"]
+    files = ["README.md", "app/graph/nodes.py", "app/api/server.py"]
     matches = [{"file": "app/graph/nodes.py", "line": 10, "text": "project"}]
 
     assert _project_relevant_files(files, matches) == [
         "app/graph/nodes.py",
         "README.md",
-        "app/ui/streamlit_app.py",
+        "app/api/server.py",
     ]
 
 
