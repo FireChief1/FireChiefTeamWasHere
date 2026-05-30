@@ -110,6 +110,14 @@ the rejected code and validation error as feedback. If repair still fails, the
 workflow stops without writing files and the React technical panel can show the
 validation error plus rejected code for debugging.
 
+Project Intake can optionally run a bounded, model-driven file-discovery loop
+(`PROJECT_EXPLORE_ENABLED`, off by default). When enabled, the model requests a
+few extra project files to read or searches to run before the workflow starts,
+so it gathers its own context instead of only the deterministically selected
+files. The model only chooses *what* to read; the node executes it through the
+already-sandboxed workspace MCP tools, and the loop is bounded by step and byte
+caps to stay cheap on a single local GPU.
+
 ## Technology Stack
 
 - **LangGraph** — multi-agent orchestration (state machine, conditional edges)

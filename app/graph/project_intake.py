@@ -6,8 +6,9 @@ import re
 from pathlib import Path
 from typing import Any
 
-from app.config import PROJECT_ROOT
+from app.config import PROJECT_ROOT, settings
 from app.graph.error_boundary import node_error_boundary
+from app.graph.project_explore import explore_project_files
 from app.graph.state import AgentState
 from app.tools.mcp_client import project_tools
 
@@ -79,6 +80,14 @@ async def project_intake_node(state: AgentState) -> dict[str, Any]:
         )
         relevant_files = project_relevant_files(files, matches)
         file_excerpts = await project_file_excerpts(tools, relevant_files)
+        if settings.project_explore_enabled:
+            relevant_files, file_excerpts = await _explore_and_merge(
+                task=state["task"],
+                tools=tools,
+                files=files,
+                relevant_files=relevant_files,
+                file_excerpts=file_excerpts,
+            )
         git_status = await tools.git_status()
         git_diff = await tools.git_diff(max_chars=6000)
 
@@ -124,6 +133,42 @@ def _path_mismatch_update(project_path: Path, mcp_root: Path) -> dict[str, Any]:
         "should_abort": True,
         "status": "FAILED",
     }
+
+
+async def _explore_and_merge(
+    *,
+    task: str,
+    tools: Any,
+    files: list[str],
+    relevant_files: list[str],
+    file_excerpts: list[dict[str, object]],
+) -> tuple[list[str], list[dict[str, object]]]:
+    """Run the bounded discovery loop and merge any newly read files.
+
+    Returns the (relevant_files, file_excerpts) pair, extended with files the
+    model chose to read. Never drops existing context; on failure it returns
+    the inputs unchanged.
+    """
+    discovered = await explore_project_files(
+        task=task,
+        tools=tools,
+        candidate_files=files,
+        seen_excerpts=file_excerpts,
+        max_steps=settings.project_explore_max_steps,
+        max_bytes=settings.project_explore_max_bytes,
+    )
+    seen = {str(item.get("file")) for item in file_excerpts}
+    merged_excerpts = list(file_excerpts)
+    merged_relevant = list(relevant_files)
+    for excerpt in discovered:
+        name = str(excerpt.get("file"))
+        if name in seen:
+            continue
+        seen.add(name)
+        merged_excerpts.append(excerpt)
+        if name not in merged_relevant:
+            merged_relevant.append(name)
+    return merged_relevant, merged_excerpts
 
 
 def project_path_from_state(state: AgentState) -> Path:

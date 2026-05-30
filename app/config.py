@@ -61,6 +61,15 @@ class Settings(BaseSettings):
     max_iterations: int = 3
     test_timeout: int = 30
 
+    # --- Project exploration (bounded, model-driven file discovery) ---
+    # OFF by default: when enabled, Project Intake lets the model request a few
+    # extra files to read/search before the workflow runs, so it can gather its
+    # own context instead of only the deterministically selected files. Bounded
+    # by step and byte caps to stay cheap on a single local GPU.
+    project_explore_enabled: bool = False
+    project_explore_max_steps: int = 6
+    project_explore_max_bytes: int = 40000
+
     # --- Project memory ---
     # Max active semantic memory chunks kept per project. New chunks evict the
     # lowest-importance, oldest ones (in Postgres and Chroma) so memory does not
