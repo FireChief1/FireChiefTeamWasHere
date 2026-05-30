@@ -7,7 +7,7 @@ import re
 from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Literal, Protocol, cast
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field
@@ -90,20 +90,19 @@ class ProjectActionHandler(Protocol):
         """Execute the action after validation."""
 
 
+_TURKISH_ASCII_TABLE: dict[str, str | int | None] = {
+    "ç": "c",
+    "ğ": "g",
+    "ı": "i",
+    "ö": "o",
+    "ş": "s",
+    "ü": "u",
+}
+
+
 def normalize_project_message(message: str) -> str:
     """Normalize casual Turkish/English text for safe target resolution."""
-    normalized = message.casefold().translate(
-        str.maketrans(
-            {
-                "ç": "c",
-                "ğ": "g",
-                "ı": "i",
-                "ö": "o",
-                "ş": "s",
-                "ü": "u",
-            }
-        )
-    )
+    normalized = message.casefold().translate(str.maketrans(_TURKISH_ASCII_TABLE))
     return " ".join(normalized.strip().split())
 
 
@@ -121,7 +120,9 @@ def action_from_chat_decision(
 ) -> ProjectActionDecision:
     """Convert a router intent into a concrete product action."""
     route_source: ProjectActionRouteSource = (
-        routed_by if routed_by in {"policy", "model", "fallback"} else "fallback"
+        cast(ProjectActionRouteSource, routed_by)
+        if routed_by in {"policy", "model", "fallback"}
+        else "fallback"
     )
     default_action = _action_for_intent(intent)
     action = _normalize_action_name(action_name) or default_action

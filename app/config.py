@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     # loops and runaway output. Generous for this project's small modules; raise
     # for very large multi-file generation, or set to -1 to disable the cap.
     llm_num_predict: int = 4096
+    # Fixed RNG seed passed to Ollama. A fixed integer makes generation
+    # reproducible for the same prompt, which matters most for the temperature-0
+    # router and the low-temperature reviewer. Set to -1 to let Ollama randomize.
+    llm_seed: int = 0
 
     # --- Workflow limits ---
     max_iterations: int = 3

@@ -249,6 +249,26 @@ async def test_ensure_recent_health_throttles_probes(monkeypatch):
     assert calls["count"] == 2
 
 
+def test_chat_model_sets_a_fixed_seed_for_reproducibility(monkeypatch):
+    monkeypatch.setattr(pool_module.settings, "llm_seed", 7)
+    pool = LLMPool(nodes=[_node("coder", [Capability.CODER])])
+
+    model = pool._chat_model(pool.nodes[0], temperature=0.0)
+
+    assert model.seed == 7
+    assert model.num_ctx == pool_module.settings.llm_num_ctx
+    assert model.num_predict == pool_module.settings.llm_num_predict
+
+
+def test_chat_model_leaves_seed_unset_when_negative(monkeypatch):
+    monkeypatch.setattr(pool_module.settings, "llm_seed", -1)
+    pool = LLMPool(nodes=[_node("coder", [Capability.CODER])])
+
+    model = pool._chat_model(pool.nodes[0], temperature=0.0)
+
+    assert model.seed is None
+
+
 def test_build_default_pool_splits_chat_from_coder(monkeypatch):
     monkeypatch.setattr(pool_module.settings, "ollama_base_url", "http://localhost:11434")
     monkeypatch.setattr(pool_module.settings, "chat_model", "qwen2.5:14b")

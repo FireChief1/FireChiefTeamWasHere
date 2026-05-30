@@ -223,6 +223,13 @@ class LLMPool:
         This path intentionally bypasses LangChain's text-only structured-output
         helpers so the VISION capability can remain optional and lazy.
         """
+        options: dict[str, object] = {
+            "temperature": temperature,
+            "num_ctx": settings.llm_num_ctx,
+            "num_predict": settings.llm_num_predict,
+        }
+        if settings.llm_seed >= 0:
+            options["seed"] = settings.llm_seed
         last_error: Exception | None = None
         for attempt in range(self.max_retries):
             node = self.pick_node(capability)
@@ -239,11 +246,7 @@ class LLMPool:
                             }
                         ],
                         "stream": False,
-                        "options": {
-                            "temperature": temperature,
-                            "num_ctx": settings.llm_num_ctx,
-                            "num_predict": settings.llm_num_predict,
-                        },
+                        "options": options,
                     },
                 )
                 response.raise_for_status()
@@ -358,12 +361,16 @@ class LLMPool:
 
     def _chat_model(self, node: LLMNode, temperature: float) -> ChatOllama:
         """Build a ChatOllama client configured for the given node."""
+        # A fixed seed makes generation reproducible; -1 opts back into random
+        # (ChatOllama treats seed=None as unset).
+        seed = settings.llm_seed if settings.llm_seed >= 0 else None
         return ChatOllama(
             model=node.model,
             base_url=node.base_url,
             temperature=temperature,
             num_ctx=settings.llm_num_ctx,
             num_predict=settings.llm_num_predict,
+            seed=seed,
         )
 
     # --- lifecycle ---
