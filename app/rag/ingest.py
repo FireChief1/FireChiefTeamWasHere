@@ -13,7 +13,7 @@ from __future__ import annotations
 from loguru import logger
 
 from app.config import settings
-from app.rag.store import get_collection, get_embeddings
+from app.rag.store import DOC_PREFIX, get_collection, get_embeddings
 
 
 def source_domain(source: str) -> str:
@@ -118,7 +118,9 @@ def ingest() -> int:
     metadatas: list[dict[str, str]] = []
     for doc in docs:
         source = str(doc.relative_to(settings.docs_dir))
-        for section_index, section in enumerate(chunk_markdown(doc.read_text())):
+        for section_index, section in enumerate(
+            chunk_markdown(doc.read_text(encoding="utf-8"))
+        ):
             chunks = split_large_chunk(
                 section,
                 max_chars=settings.chunk_size,
@@ -141,7 +143,11 @@ def ingest() -> int:
         return 0
 
     logger.info(f"embedding {len(documents)} chunks from {len(docs)} files...")
-    vectors = get_embeddings().embed_documents(documents)
+    # Embed with the nomic document prefix, but store the original chunk text so
+    # the prefix never leaks into agent prompts.
+    vectors = get_embeddings().embed_documents(
+        [f"{DOC_PREFIX}{document}" for document in documents]
+    )
 
     # Recreate the collection only after embeddings succeed. This keeps a
     # usable vector store intact when Ollama or the embedding model is down.

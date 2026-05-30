@@ -17,6 +17,15 @@ from app.config import settings
 COLLECTION_NAME = "knowledge"
 PROJECT_MEMORY_COLLECTION_NAME = "project_memory"
 
+# Bumped whenever the indexing recipe changes (distance space, embedding
+# prefixes). Retrieval reads it from collection metadata so an index built by an
+# older ingest keeps working with legacy retrieval until it is re-ingested.
+RAG_INDEX_VERSION = "2"
+# nomic-embed-text is trained with asymmetric task prefixes; using them
+# materially improves retrieval relevance.
+DOC_PREFIX = "search_document: "
+QUERY_PREFIX = "search_query: "
+
 
 def get_collection(*, create: bool = False) -> Any:
     """Return the RAG ChromaDB collection.
@@ -33,7 +42,14 @@ def get_collection(*, create: bool = False) -> Any:
         # The collection may not exist yet on a first ingest.
         with contextlib.suppress(Exception):
             client.delete_collection(COLLECTION_NAME)
-        return client.create_collection(COLLECTION_NAME)
+        return client.create_collection(
+            COLLECTION_NAME,
+            metadata={
+                "hnsw:space": "cosine",
+                "embedding_model": settings.embedding_model,
+                "index_version": RAG_INDEX_VERSION,
+            },
+        )
     return client.get_or_create_collection(COLLECTION_NAME)
 
 

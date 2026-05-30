@@ -71,6 +71,11 @@ class Settings(BaseSettings):
     rag_top_k: int = 5
     chunk_size: int = 500
     chunk_overlap: int = 50
+    # Max cosine distance (0=identical, 2=opposite) for a retrieved chunk to be
+    # considered relevant. Chunks beyond this are dropped instead of injected as
+    # noise. Applies only to cosine-space indexes (re-ingest to enable); set
+    # higher to loosen, or to a large value to effectively disable filtering.
+    rag_max_distance: float = 0.6
 
     # --- Paths (resolved relative to the project root) ---
     workspace_dir: Path = PROJECT_ROOT / "workspace"

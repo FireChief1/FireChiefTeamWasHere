@@ -7,8 +7,105 @@ from types import SimpleNamespace
 import pytest
 
 from app.rag import ingest as ingest_module
+from app.rag import retriever as retriever_module
 from app.rag.ingest import chunk_markdown, source_domain, split_large_chunk
-from app.rag.retriever import RetrievedChunk, _profile_filtered_chunks
+from app.rag.retriever import (
+    RetrievedChunk,
+    _profile_filtered_chunks,
+    retrieve_with_status,
+)
+
+
+class _FakeCollection:
+    """Minimal stand-in for a ChromaDB collection."""
+
+    def __init__(self, *, metadata, docs, metas, distances):
+        self.metadata = metadata
+        self._docs = docs
+        self._metas = metas
+        self._distances = distances
+
+    def count(self):
+        return len(self._docs)
+
+    def query(self, *, query_embeddings, n_results, include=None):
+        del query_embeddings, n_results, include
+        return {
+            "documents": [self._docs],
+            "metadatas": [self._metas],
+            "distances": [self._distances],
+        }
+
+
+class _RecordingEmbeddings:
+    def __init__(self):
+        self.embedded: list[str] = []
+
+    def embed_query(self, text):
+        self.embedded.append(text)
+        return [0.0]
+
+
+def test_retrieve_drops_chunks_beyond_distance_threshold(monkeypatch):
+    collection = _FakeCollection(
+        metadata={
+            "index_version": "2",
+            "embedding_model": retriever_module.settings.embedding_model,
+            "hnsw:space": "cosine",
+        },
+        docs=["near doc", "far doc"],
+        metas=[
+            {"source": "coding-standards/a.md"},
+            {"source": "coding-standards/b.md"},
+        ],
+        distances=[0.2, 1.5],
+    )
+    embeddings = _RecordingEmbeddings()
+    monkeypatch.setattr(retriever_module, "get_collection", lambda *_a, **_k: collection)
+    monkeypatch.setattr(retriever_module, "get_embeddings", lambda: embeddings)
+
+    result = retrieve_with_status("how do I test", profile=None)
+
+    assert result.status == "retrieved"
+    assert [chunk.text for chunk in result.chunks] == ["near doc"]
+    # The nomic query prefix is applied on a modern index.
+    assert embeddings.embedded[0].startswith("search_query: ")
+
+
+def test_retrieve_legacy_index_skips_threshold_and_prefix(monkeypatch):
+    collection = _FakeCollection(
+        metadata=None,
+        docs=["a", "b"],
+        metas=[{"source": "x"}, {"source": "y"}],
+        distances=[0.2, 1.9],
+    )
+    embeddings = _RecordingEmbeddings()
+    monkeypatch.setattr(retriever_module, "get_collection", lambda *_a, **_k: collection)
+    monkeypatch.setattr(retriever_module, "get_embeddings", lambda: embeddings)
+
+    result = retrieve_with_status("question", profile=None)
+
+    # No threshold and no prefix on a legacy index, so retrieval is unchanged.
+    assert len(result.chunks) == 2
+    assert embeddings.embedded[0] == "question"
+
+
+def test_retrieve_degrades_on_embedding_model_mismatch(monkeypatch):
+    collection = _FakeCollection(
+        metadata={"index_version": "2", "embedding_model": "some-old-model"},
+        docs=["a"],
+        metas=[{"source": "x"}],
+        distances=[0.1],
+    )
+    monkeypatch.setattr(retriever_module, "get_collection", lambda *_a, **_k: collection)
+    monkeypatch.setattr(
+        retriever_module, "get_embeddings", lambda: _RecordingEmbeddings()
+    )
+
+    result = retrieve_with_status("question")
+
+    assert result.status == "unavailable"
+    assert "ingest" in result.message.lower()
 
 
 def test_chunk_markdown_splits_on_section_headings():

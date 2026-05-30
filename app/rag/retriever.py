@@ -12,7 +12,7 @@ from typing import Literal
 from loguru import logger
 
 from app.config import settings
-from app.rag.store import get_collection, get_embeddings
+from app.rag.store import QUERY_PREFIX, get_collection, get_embeddings
 
 _PROFILE_SOURCE_PREFIXES = {
     "python": (
@@ -30,10 +30,10 @@ _PROFILE_SOURCE_PREFIXES = {
         "code-review/",
     ),
     "docs": (
-        "docs",
         "architecture/",
         "project-mode/",
         "git/",
+        "coding-standards/",
     ),
     "project": (
         "project-mode/",
@@ -101,9 +101,27 @@ def retrieve_with_status(
                     "`python -m app.rag.ingest` to ingest docs."
                 ),
             )
-        query_vector = get_embeddings().embed_query(query)
+        metadata = collection.metadata or {}
+        # An index built by a newer ingest carries embedding metadata; older
+        # indexes (no metadata) keep the legacy prefix-free, no-threshold path.
+        modern_index = _index_version(metadata) >= 2
+
+        indexed_model = str(metadata.get("embedding_model") or "")
+        if indexed_model and indexed_model != settings.embedding_model:
+            message = (
+                f"RAG index was built with '{indexed_model}' but the configured "
+                f"embedding model is '{settings.embedding_model}'. Re-run "
+                "`python -m app.rag.ingest`."
+            )
+            logger.warning(message)
+            return RetrievalResult(chunks=[], status="unavailable", message=message)
+
+        query_text = f"{QUERY_PREFIX}{query}" if modern_index else query
+        query_vector = get_embeddings().embed_query(query_text)
         result = collection.query(
-            query_embeddings=[query_vector], n_results=query_k
+            query_embeddings=[query_vector],
+            n_results=query_k,
+            include=["documents", "metadatas", "distances"],
         )
     except Exception as exc:  # noqa: BLE001 - RAG is optional; degrade gracefully
         logger.warning(f"RAG retrieval unavailable: {exc}")
@@ -115,9 +133,16 @@ def retrieve_with_status(
 
     documents = (result.get("documents") or [[]])[0]
     metadatas = (result.get("metadatas") or [[]])[0]
+    distances = (result.get("distances") or [[]])[0]
+    triples = zip(documents, metadatas, distances, strict=False)
+    # On a cosine index, drop chunks beyond the relevance threshold so an
+    # off-topic task gets no RAG noise instead of the k least-far standards.
     all_chunks = [
         RetrievedChunk(text=text, source=str((meta or {}).get("source", "?")))
-        for text, meta in zip(documents, metadatas, strict=False)
+        for text, meta, distance in triples
+        if not modern_index
+        or distance is None
+        or distance <= settings.rag_max_distance
     ]
     chunks = _profile_filtered_chunks(all_chunks, profile, top_k)
     if not chunks:
@@ -131,6 +156,14 @@ def retrieve_with_status(
         status="retrieved",
         message=_retrieval_message(len(chunks), profile),
     )
+
+
+def _index_version(metadata: dict[str, object]) -> int:
+    """Return the integer index version stored on the collection (1 = legacy)."""
+    try:
+        return int(str(metadata.get("index_version", "1")))
+    except (TypeError, ValueError):
+        return 1
 
 
 def _profile_filtered_chunks(

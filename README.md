@@ -164,6 +164,8 @@ cp .env.example .env
 docker compose up -d
 
 # 5. Ingest the knowledge base into RAG
+# (re-run after upgrading: the index now uses cosine distance + nomic-embed
+#  search prefixes, and records its embedding model for mismatch detection)
 python -m app.rag.ingest
 
 # 6. Run the local API for the React UI
