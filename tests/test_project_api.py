@@ -654,6 +654,20 @@ def test_project_memory_summary_is_length_bounded():
     assert len(summary) <= _MAX_MEMORY_SUMMARY_CHARS + 3
 
 
+def test_clamp_max_iterations_bounds_user_input():
+    assert project_service._clamp_max_iterations(3) == 3
+    assert project_service._clamp_max_iterations(0) == project_service._MIN_MAX_ITERATIONS
+    assert project_service._clamp_max_iterations(-5) == project_service._MIN_MAX_ITERATIONS
+    assert project_service._clamp_max_iterations(999) == project_service._MAX_MAX_ITERATIONS
+
+
+def test_recursion_limit_grows_with_iterations_and_exceeds_node_count():
+    for iterations in (1, 3, 10):
+        limit = project_service._recursion_limit_for(iterations)
+        # Lead nodes (5) + iterations*(dev,rev,qa,sup) + integrator must fit.
+        assert limit > 5 + iterations * 4 + 1
+
+
 def test_run_payload_exposes_developer_diagnostics():
     payload = project_service.run_payload(
         {

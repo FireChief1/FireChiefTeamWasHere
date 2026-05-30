@@ -12,6 +12,9 @@ import uuid
 from pathlib import Path
 from typing import Any, TypedDict
 
+from langgraph.errors import GraphRecursionError
+from loguru import logger
+
 from app.graph.project_actions import (
     ProjectActionDecision,
     action_from_chat_decision,
@@ -81,6 +84,27 @@ _PENDING_PROJECT_APPLIES: dict[str, PendingProjectApply] = {}
 # same project and should not linger in the long-running server process.
 _PENDING_APPLY_TTL_SECONDS = 3600.0
 _MAX_PENDING_APPLIES = 32
+
+# The Developer<->Reviewer loop is user-controllable via maxIterations. It is
+# clamped to a safe range and the graph recursion limit is derived from it, so a
+# large value can never exceed the limit and crash with GraphRecursionError.
+_MIN_MAX_ITERATIONS = 1
+_MAX_MAX_ITERATIONS = 10
+
+
+def _clamp_max_iterations(value: int) -> int:
+    """Clamp a user-supplied iteration count into the supported range."""
+    return max(_MIN_MAX_ITERATIONS, min(int(value), _MAX_MAX_ITERATIONS))
+
+
+def _recursion_limit_for(max_iterations: int) -> int:
+    """Derive a graph recursion limit that comfortably fits the fix loop.
+
+    Lead nodes (intake, brief, classifier, rag, analyst) plus one Integrator,
+    plus four nodes (developer, reviewer, qa, supervisor) per iteration, with a
+    safety margin.
+    """
+    return 12 + max_iterations * 5
 
 
 async def handle_project_chat(
@@ -414,13 +438,14 @@ async def run_project_workflow(
 
     pool = get_pool()
     await pool.warm_up()
+    safe_max_iterations = _clamp_max_iterations(max_iterations)
     initial: AgentState = {
         "task": task,
         "task_id": uuid.uuid4().hex[:8],
         "mode": "project",
         "iteration": 0,
         "status": "RUNNING",
-        "max_iterations": max_iterations,
+        "max_iterations": safe_max_iterations,
         "use_rag": use_rag,
         "is_degraded": pool.is_degraded,
         "project_path": project["path"],
@@ -439,7 +464,21 @@ async def run_project_workflow(
     initial["task_profile"] = profile
     initial["task_profile_reason"] = profile_reason
     workflow = build_workflow()
-    result = await workflow.ainvoke(initial, config={"recursion_limit": 50})
+    try:
+        result = await workflow.ainvoke(
+            initial,
+            config={"recursion_limit": _recursion_limit_for(safe_max_iterations)},
+        )
+    except GraphRecursionError as exc:
+        # Should be unreachable given the derived limit, but degrade cleanly
+        # instead of surfacing a 500 if the loop ever fails to converge.
+        logger.warning(f"workflow hit the recursion limit: {exc}")
+        return {
+            **initial,
+            "status": "FAILED",
+            "node_error": f"workflow stopped: recursion limit reached ({exc})",
+            "should_abort": True,
+        }
     return dict(result)
 
 

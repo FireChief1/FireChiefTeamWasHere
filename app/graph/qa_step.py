@@ -30,7 +30,7 @@ async def qa_node(state: AgentState) -> dict[str, Any]:
 
     result = await QAAgent(get_pool()).run(state)
 
-    task_rel = f"task-{state['task_id']}"
+    task_rel = f"task-{state.get('task_id') or 'unknown'}"
     code = state.get("code") or {}
     test_code = _strip_code_fences(result.test_code)
     test_file = _build_test_imports(test_code, code) + test_code
