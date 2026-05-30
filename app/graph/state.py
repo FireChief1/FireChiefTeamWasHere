@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 Severity = Literal["BLOCKER", "MAJOR", "MINOR"]
 Status = Literal["RUNNING", "SUCCESS", "COMPLETED_WITH_WARNINGS", "FAILED"]
-TaskProfile = Literal["python", "static_web", "docs", "project"]
+TaskProfile = Literal["python", "static_web", "node_js", "docs", "project"]
 
 
 class FeedbackItem(BaseModel):

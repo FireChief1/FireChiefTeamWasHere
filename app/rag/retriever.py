@@ -29,6 +29,13 @@ _PROFILE_SOURCE_PREFIXES = {
         "project-mode/",
         "code-review/",
     ),
+    "node_js": (
+        "coding-standards/",
+        "testing/",
+        "patterns/",
+        "security/",
+        "code-review/",
+    ),
     "docs": (
         "architecture/",
         "project-mode/",

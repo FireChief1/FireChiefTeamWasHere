@@ -99,10 +99,16 @@ excerpts from the selected folder are included in the prompt so proposals and
 static-web edits preserve the existing project subject matter unless the user
 explicitly asks to replace it. Documentation tasks use the `docs` profile and
 produce Markdown/text files such as `README.md` or `docs/architecture.md`.
+Standalone JavaScript/Node tasks use the `node_js` profile, which produces
+`.js`/`.mjs` modules and validates them structurally (a real Node test runner is
+gated on the local toolchain). Routing is two-axis: the chat router names the
+target language and the classifier maps it to a profile, falling back to
+keywords; a JavaScript task that is really a web page (HTML/CSS) still routes to
+`static_web`.
 When Project Chat admits a request as `implementation`/`modify_project`, that
-router decision is carried into the workflow so terse Python artifact requests
-such as "python class/sınıf olsun" use the Python profile rather than the
-advisory project profile.
+router decision is carried into the workflow so terse artifact requests such as
+"python class/sınıf olsun" or "C# sınıfı yaz" use the right language profile
+rather than the advisory project profile.
 
 Developer output is validated before any write. If generated files are empty,
 unsupported, or syntactically invalid, the retry is a repair pass that includes

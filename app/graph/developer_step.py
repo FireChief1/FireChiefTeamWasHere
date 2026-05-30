@@ -9,6 +9,7 @@ from loguru import logger
 
 from app.agents.developer import DeveloperAgent
 from app.agents.docs_advisor import DocsAdvisorAgent
+from app.agents.javascript_developer import JavaScriptDeveloperAgent
 from app.agents.project_advisor import ProjectAdvisorAgent
 from app.agents.static_web_developer import StaticWebDeveloperAgent
 from app.graph.code_utils import strip_code_fences as _strip_code_fences
@@ -212,6 +213,8 @@ def _developer_for_profile(state: AgentState) -> DeveloperAgent:
     """Return the Developer persona for the current task profile."""
     if state.get("task_profile") == "static_web":
         return StaticWebDeveloperAgent(get_pool())
+    if state.get("task_profile") == "node_js":
+        return JavaScriptDeveloperAgent(get_pool())
     if state.get("task_profile") == "docs":
         return DocsAdvisorAgent(get_pool())
     if state.get("task_profile") == "project":

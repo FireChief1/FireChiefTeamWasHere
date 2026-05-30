@@ -20,10 +20,23 @@ def test_router_language_routes_implementation_by_language():
     assert profile == "python"
 
 
-def test_router_language_javascript_maps_to_existing_static_web_profile():
+def test_router_language_javascript_routes_to_node_profile():
     profile, _reason = classify_task_profile(
         {
             "task": "bir fonksiyon ekle",
+            "mode": "project",
+            "project_chat_intent": "implementation",
+            "project_chat_language": "javascript",
+        }
+    )
+    assert profile == "node_js"
+
+
+def test_javascript_with_web_signal_stays_static_web():
+    # JS that is really a web page (HTML/CSS context) routes to static_web.
+    profile, _reason = classify_task_profile(
+        {
+            "task": "javascript ile bir landing page yap",
             "mode": "project",
             "project_chat_intent": "implementation",
             "project_chat_language": "javascript",

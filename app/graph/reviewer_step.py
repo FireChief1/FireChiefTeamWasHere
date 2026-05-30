@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.agents.docs_advisor import DocsAdvisorReviewerAgent
+from app.agents.javascript_reviewer import JavaScriptReviewerAgent
 from app.agents.project_advisor import ProjectAdvisorReviewerAgent
 from app.agents.reviewer import ReviewerAgent
 from app.agents.static_web_reviewer import StaticWebReviewerAgent
@@ -19,6 +20,8 @@ async def reviewer_node(state: AgentState) -> dict[str, Any]:
     agent = (
         StaticWebReviewerAgent(get_pool())
         if state.get("task_profile") == "static_web"
+        else JavaScriptReviewerAgent(get_pool())
+        if state.get("task_profile") == "node_js"
         else DocsAdvisorReviewerAgent(get_pool())
         if state.get("task_profile") == "docs"
         else ProjectAdvisorReviewerAgent(get_pool())

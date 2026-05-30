@@ -12,6 +12,7 @@ from app.config import settings
 from app.graph.advisory_qa import advisory_qa_update as _advisory_qa_update
 from app.graph.code_utils import strip_code_fences as _strip_code_fences
 from app.graph.error_boundary import node_error_boundary
+from app.graph.node_qa import node_qa_update as _node_qa_update
 from app.graph.pytest_utils import build_test_imports as _build_test_imports
 from app.graph.pytest_utils import parse_pytest as _parse_pytest
 from app.graph.state import AgentState, FeedbackItem, TestResults
@@ -25,6 +26,8 @@ async def qa_node(state: AgentState) -> dict[str, Any]:
     """Run profile-specific QA and fold test failures into review feedback."""
     if state.get("task_profile") == "static_web":
         return _static_web_qa_update(state)
+    if state.get("task_profile") == "node_js":
+        return _node_qa_update(state)
     if state.get("task_profile") in {"docs", "project"}:
         return _advisory_qa_update(state)
 

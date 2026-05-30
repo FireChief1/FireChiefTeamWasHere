@@ -121,10 +121,12 @@ _LANGUAGE_TO_PROFILE: dict[str, TaskProfile] = {
     "py": "python",
     "html": "static_web",
     "css": "static_web",
-    "javascript": "static_web",
-    "js": "static_web",
-    "typescript": "static_web",
-    "ts": "static_web",
+    "javascript": "node_js",
+    "js": "node_js",
+    "typescript": "node_js",
+    "ts": "node_js",
+    "node": "node_js",
+    "nodejs": "node_js",
 }
 
 
@@ -154,6 +156,14 @@ def classify_task_profile(state: AgentState) -> tuple[TaskProfile, str]:
     router_language = _normalized_task(str(state.get("project_chat_language") or ""))
     mapped_profile = _LANGUAGE_TO_PROFILE.get(router_language)
     if mapped_profile is not None and has_implementation_signal:
+        # A JavaScript task that is really a web page (HTML/CSS) belongs to the
+        # static web profile, not the standalone Node profile.
+        if mapped_profile == "node_js" and has_static_web_signal:
+            return (
+                "static_web",
+                f"Router named '{router_language}' but the task targets a web "
+                "page (HTML/CSS), so it uses the static web profile.",
+            )
         return (
             mapped_profile,
             f"Chat router identified target language '{router_language}', "

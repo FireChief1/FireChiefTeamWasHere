@@ -41,6 +41,26 @@ def validate_python_files(code: dict[str, str]) -> str | None:
     return None
 
 
+_NODE_SUFFIXES = {".js", ".mjs", ".cjs", ".json"}
+_NODE_SCRIPT_SUFFIXES = {".js", ".mjs", ".cjs"}
+
+
+def validate_node_files(code: dict[str, str]) -> str | None:
+    """Validate Node.js/JavaScript output (multi-file, >=1 JS module)."""
+    error = validate_source_files(code, allowed_suffixes=_NODE_SUFFIXES)
+    if error:
+        return error
+    has_script = any(
+        Path(name).suffix.casefold() in _NODE_SCRIPT_SUFFIXES for name in code
+    )
+    if not has_script:
+        return (
+            "Node.js tasks must produce at least one JavaScript "
+            "(.js/.mjs/.cjs) file."
+        )
+    return None
+
+
 def validate_source_files(
     code: dict[str, str],
     *,
@@ -146,6 +166,7 @@ def safe_relative_file_path(filename: str) -> bool:
 _PROFILE_VALIDATORS: dict[str, Callable[[dict[str, str]], str | None]] = {
     "python": validate_python_files,
     "static_web": validate_static_web_files,
+    "node_js": validate_node_files,
     "docs": lambda code: validate_advisory_files(code, profile="docs"),
     "project": lambda code: validate_advisory_files(code, profile="project"),
 }
