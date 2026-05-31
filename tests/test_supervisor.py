@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-from app.graph.state import AgentState, FeedbackItem
+from app.graph.state import AgentState, FeedbackItem, TestResults
 from app.graph.supervisor import route_after_supervisor, supervisor_node
 
 
 def _blocker() -> FeedbackItem:
     return FeedbackItem(severity="BLOCKER", issue="something is broken")
+
+
+def _failing_tests() -> TestResults:
+    return TestResults(passed=0, failed=1, total=1, output="1 failed")
 
 
 def _minor() -> FeedbackItem:
@@ -34,22 +38,49 @@ async def test_supervisor_loops_when_blocker_and_iterations_remain():
     assert update["iteration"] == 1
 
 
-async def test_supervisor_fails_on_blocker_at_max_iterations():
+async def test_supervisor_fails_at_max_iterations_when_tests_fail():
+    # A genuine test failure that the loop could not fix is a hard FAILED.
+    state: AgentState = {
+        "review_feedback": [_blocker()],
+        "iteration": 2,
+        "issue_count_history": [3, 2],
+        "test_results": _failing_tests(),
+    }
+    update = await supervisor_node(state)
+    assert update["status"] == "FAILED"
+
+
+async def test_supervisor_warns_at_max_iterations_when_tests_pass():
+    # Only reviewer judgment is left (no test failure), so keep the best attempt
+    # with warnings instead of discarding it.
     state: AgentState = {
         "review_feedback": [_blocker()],
         "iteration": 2,
         "issue_count_history": [3, 2],
     }
     update = await supervisor_node(state)
-    assert update["status"] == "FAILED"
+    assert update["status"] == "COMPLETED_WITH_WARNINGS"
 
 
-async def test_supervisor_stops_when_the_loop_makes_no_progress():
-    # The blocking-issue count did not decrease (1 -> 1), so the loop stops.
+async def test_supervisor_warns_on_no_progress_when_tests_pass():
+    # The blocking-issue count did not decrease (1 -> 1). With passing tests the
+    # remaining blocker is reviewer judgment, so finish with warnings (preview),
+    # not a hard FAILED.
     state: AgentState = {
         "review_feedback": [_blocker()],
         "iteration": 0,
         "issue_count_history": [1],
+    }
+    update = await supervisor_node(state)
+    assert update["status"] == "COMPLETED_WITH_WARNINGS"
+
+
+async def test_supervisor_fails_on_no_progress_when_tests_fail():
+    state: AgentState = {
+        "review_feedback": [_blocker()],
+        "iteration": 0,
+        "issue_count_history": [1],
+        "test_results": _failing_tests(),
     }
     update = await supervisor_node(state)
     assert update["status"] == "FAILED"
@@ -63,6 +94,7 @@ async def test_supervisor_restores_prior_best_code_when_current_code_is_worse():
         "best_code": {"best.py": "def ok():\n    return True\n"},
         "code": {"current.py": "def worse():\n    return False\n"},
         "max_iterations": 3,
+        "test_results": _failing_tests(),
     }
 
     update = await supervisor_node(state)

@@ -32,7 +32,6 @@ async def supervisor_node(state: AgentState) -> dict[str, Any]:
 
     # Only BLOCKER and MAJOR findings are worth another iteration.
     blocking = [f for f in feedback if f.severity in _BLOCKING]
-    has_blocker = any(f.severity == "BLOCKER" for f in feedback)
     issue_count = len(blocking)
     history = prior_history + [issue_count]
 
@@ -54,7 +53,13 @@ async def supervisor_node(state: AgentState) -> dict[str, Any]:
     no_progress = len(history) >= 2 and history[-1] >= history[-2]
 
     if at_max or no_progress:
-        update["status"] = "FAILED" if has_blocker else "COMPLETED_WITH_WARNINGS"
+        results = state.get("test_results")
+        tests_failed = int(getattr(results, "failed", 0) or 0)
+        # A genuine test failure is a hard FAILED. But if tests pass (or this
+        # profile has no executable tests) and the only thing left is reviewer
+        # judgment, keep the best attempt and finish with warnings so the user
+        # can still review/preview it instead of discarding good output.
+        update["status"] = "FAILED" if tests_failed > 0 else "COMPLETED_WITH_WARNINGS"
         update["code"] = (
             update.get("best_code")
             or dict(state.get("best_code") or {})
