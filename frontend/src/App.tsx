@@ -45,6 +45,7 @@ function App() {
   const [notice, setNotice] = useState<Notice | null>(null);
   const [route, setRoute] = useState<RouteDecision | null>(null);
   const [run, setRun] = useState<ProjectRun | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   useEffect(() => {
     void refreshProjects();
@@ -89,6 +90,7 @@ function App() {
       setSelectedPath(nextBundle.project.path);
       setRoute(null);
       setRun(null);
+      setSidebarOpen(false);
       setNotice({ tone: "success", text: "Proje açıldı." });
       await refreshProjects();
     } catch (error) {
@@ -217,7 +219,14 @@ function App() {
   }
 
   return (
-    <main className="app-shell">
+    <main className={sidebarOpen ? "app-shell sidebar-open" : "app-shell"}>
+      <button
+        type="button"
+        className="sidebar-scrim"
+        aria-label="Menüyü kapat"
+        tabIndex={sidebarOpen ? 0 : -1}
+        onClick={() => setSidebarOpen(false)}
+      />
       <aside className="sidebar">
         <header className="brand">
           <span className="brand-mark">CT</span>
@@ -225,6 +234,14 @@ function App() {
             <h1>Code Team</h1>
             <p>React Project Workspace</p>
           </div>
+          <button
+            type="button"
+            className="sidebar-close"
+            aria-label="Menüyü kapat"
+            onClick={() => setSidebarOpen(false)}
+          >
+            ✕
+          </button>
         </header>
 
         <section className="panel">
@@ -313,6 +330,23 @@ function App() {
       </aside>
 
       <section className="workspace">
+        <div className="mobile-bar">
+          <button
+            type="button"
+            className="hamburger"
+            aria-label="Menüyü aç"
+            aria-expanded={sidebarOpen}
+            onClick={() => setSidebarOpen((open) => !open)}
+          >
+            <span />
+            <span />
+            <span />
+          </button>
+          <span className="mobile-brand">
+            <span className="brand-mark sm">CT</span>
+            Code Team
+          </span>
+        </div>
         <header className="workspace-header">
           <div>
             <p className="eyebrow">Project Mode</p>
