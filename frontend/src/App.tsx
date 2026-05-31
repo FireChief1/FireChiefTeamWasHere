@@ -1,5 +1,5 @@
 import type { ChangeEvent, FormEvent, ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   applyProjectChanges,
   loadCapabilities,
@@ -49,6 +49,9 @@ function App() {
   const [route, setRoute] = useState<RouteDecision | null>(null);
   const [run, setRun] = useState<ProjectRun | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // The currently open project path; used to ignore an in-flight chat response
+  // if the user has since switched projects (prevents stale-project clobber).
+  const activeProjectRef = useRef<string>("");
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
   const [codeBackend, setCodeBackend] = useState<string>(() => {
     try {
@@ -133,10 +136,16 @@ function App() {
   async function handleOpenProject(path = selectedPath) {
     try {
       const nextBundle = await openProject(path);
+      activeProjectRef.current = nextBundle.project.path;
       setBundle(nextBundle);
       setSelectedPath(nextBundle.project.path);
       setRoute(null);
       setRun(null);
+      // Clear transient chat state so the previous project's draft/pending
+      // bubble never lingers on the newly opened project.
+      setPendingMessage("");
+      setAttachedImage(null);
+      setMessage("");
       setSidebarOpen(false);
       setNotice({ tone: "success", text: "Proje açıldı." });
       await refreshProjects();
@@ -151,6 +160,8 @@ function App() {
     if (!cleanMessage || !bundle) {
       return;
     }
+    const targetPath = bundle.project.path;
+    activeProjectRef.current = targetPath;
     setIsSending(true);
     setPendingMessage(cleanMessage);
     setMessage("");
@@ -159,7 +170,7 @@ function App() {
     setRun(null);
     try {
       const response = await sendProjectMessage({
-        projectPath: bundle.project.path,
+        projectPath: targetPath,
         message: cleanMessage,
         maxIterations,
         useRag,
@@ -172,6 +183,10 @@ function App() {
             }
           : undefined
       });
+      if (activeProjectRef.current !== targetPath) {
+        // The user switched projects while this ran; don't clobber their view.
+        return;
+      }
       setBundle({
         project: response.project,
         timeline: response.timeline,
