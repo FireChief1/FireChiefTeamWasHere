@@ -37,6 +37,16 @@ class Settings(BaseSettings):
     vision_model: str = "qwen2.5vl:7b"
     embedding_model: str = "nomic-embed-text"
 
+    # --- Optional cloud backend for the code agents (CODER + REASONER) ---
+    # Default "ollama" keeps everything local (the project's free/private thesis).
+    # Set code_backend="anthropic" with a key to route Developer/Reviewer/
+    # Analyst/QA to the Claude API; chat/router and fallback stay local, so a
+    # cloud outage degrades to local rather than failing.
+    code_backend: str = "ollama"  # "ollama" | "anthropic"
+    anthropic_api_key: str = ""
+    anthropic_model: str = "claude-sonnet-4-6"
+    anthropic_max_tokens: int = 4096
+
     # --- LLM pool behavior ---
     request_timeout: float = 180.0
     connect_timeout: float = 5.0

@@ -290,6 +290,41 @@ def test_build_default_pool_splits_chat_from_coder(monkeypatch):
     assert nodes_by_model["qwen2.5vl:7b"].warm_up is False
 
 
+def test_build_default_pool_routes_code_to_anthropic_when_enabled(monkeypatch):
+    monkeypatch.setattr(pool_module.settings, "ollama_base_url", "http://localhost:11434")
+    monkeypatch.setattr(pool_module.settings, "chat_model", "qwen2.5:14b")
+    monkeypatch.setattr(pool_module.settings, "fallback_model", "qwen2.5:14b")
+    monkeypatch.setattr(pool_module.settings, "vision_model", "qwen2.5vl:7b")
+    monkeypatch.setattr(pool_module.settings, "code_backend", "anthropic")
+    monkeypatch.setattr(pool_module.settings, "anthropic_api_key", "sk-test")
+    monkeypatch.setattr(pool_module.settings, "anthropic_model", "claude-sonnet-4-6")
+
+    pool = build_default_pool()
+    code_nodes = [n for n in pool.nodes if Capability.CODER in n.capabilities]
+    assert len(code_nodes) == 1
+    code = code_nodes[0]
+    # Code agents go to the cloud; reasoner rides the same node.
+    assert code.backend == "anthropic"
+    assert code.model == "claude-sonnet-4-6"
+    assert Capability.REASONER in code.capabilities
+    assert code.warm_up is False
+
+    # Chat and fallback stay local so a cloud outage degrades, not fails.
+    local = [n for n in pool.nodes if n.backend == "ollama"]
+    assert any(Capability.FALLBACK in n.capabilities for n in local)
+    assert any(Capability.CHAT in n.capabilities for n in local)
+
+
+def test_build_default_pool_stays_local_without_anthropic_key(monkeypatch):
+    monkeypatch.setattr(pool_module.settings, "code_backend", "anthropic")
+    monkeypatch.setattr(pool_module.settings, "anthropic_api_key", "")  # no key
+    monkeypatch.setattr(pool_module.settings, "coder_model", "qwen2.5-coder:14b")
+
+    pool = build_default_pool()
+    # Without a key, anthropic is not used: code stays on Ollama.
+    assert all(n.backend == "ollama" for n in pool.nodes)
+
+
 def test_build_default_pool_fallback_is_an_independent_node(monkeypatch):
     monkeypatch.setattr(pool_module.settings, "ollama_base_url", "http://localhost:11434")
     monkeypatch.setattr(pool_module.settings, "chat_model", "qwen2.5:14b")

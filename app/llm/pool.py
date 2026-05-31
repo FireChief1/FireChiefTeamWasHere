@@ -20,6 +20,7 @@ from enum import StrEnum
 from typing import TypeVar
 
 import httpx
+from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage
 from langchain_ollama import ChatOllama
 from loguru import logger
@@ -74,6 +75,8 @@ class LLMNode:
     warm_up: bool = True
     is_healthy: bool = True
     failure_count: int = 0
+    #: Which client serves this node: "ollama" (local) or "anthropic" (cloud).
+    backend: str = "ollama"
 
     def is_usable(self, circuit_threshold: int) -> bool:
         """Return True if the node is reachable and its circuit is closed."""
@@ -203,7 +206,7 @@ class LLMPool:
             NoHealthyNodeError: If no node can serve the capability.
         """
 
-        async def run(model: ChatOllama) -> str:
+        async def run(model: BaseChatModel) -> str:
             response = await model.ainvoke(messages)
             return str(response.content)
 
@@ -299,7 +302,7 @@ class LLMPool:
         # wrong instead of blindly resending an identical prompt.
         work: list[BaseMessage] = list(messages)
 
-        async def run(model: ChatOllama) -> T:
+        async def run(model: BaseChatModel) -> T:
             structured = model.with_structured_output(schema)
             result = await structured.ainvoke(work)
             return result  # type: ignore[return-value]
@@ -323,7 +326,7 @@ class LLMPool:
         self,
         capability: Capability,
         temperature: float,
-        run: Callable[[ChatOllama], Awaitable[R]],
+        run: Callable[[BaseChatModel], Awaitable[R]],
         *,
         on_error: Callable[[Exception], None] | None = None,
     ) -> R:
@@ -359,8 +362,10 @@ class LLMPool:
             f"all {self.max_retries} attempts failed for {capability.value}"
         ) from last_error
 
-    def _chat_model(self, node: LLMNode, temperature: float) -> ChatOllama:
-        """Build a ChatOllama client configured for the given node."""
+    def _chat_model(self, node: LLMNode, temperature: float) -> BaseChatModel:
+        """Build a chat client for the node's backend (Ollama or Anthropic)."""
+        if node.backend == "anthropic":
+            return self._anthropic_model(node, temperature)
         # A fixed seed makes generation reproducible; -1 opts back into random
         # (ChatOllama treats seed=None as unset).
         seed = settings.llm_seed if settings.llm_seed >= 0 else None
@@ -371,6 +376,22 @@ class LLMPool:
             num_ctx=settings.llm_num_ctx,
             num_predict=settings.llm_num_predict,
             seed=seed,
+        )
+
+    def _anthropic_model(self, node: LLMNode, temperature: float) -> BaseChatModel:
+        """Build a ChatAnthropic client for the Claude API code backend."""
+        from langchain_anthropic import ChatAnthropic
+        from pydantic import SecretStr
+
+        # This node is only built when an API key is configured (see
+        # build_default_pool), so the key is always present here.
+        return ChatAnthropic(
+            model_name=node.model,
+            api_key=SecretStr(settings.anthropic_api_key),
+            temperature=temperature,
+            max_tokens_to_sample=settings.anthropic_max_tokens,
+            timeout=settings.request_timeout,
+            stop=None,
         )
 
     # --- lifecycle ---
@@ -399,8 +420,14 @@ class LLMPool:
         self._warmed = True
 
     async def health_check_once(self) -> None:
-        """Probe every node once and update its health state."""
+        """Probe every Ollama node once and update its health state.
+
+        Cloud (anthropic) nodes have no /api/tags endpoint; their health is
+        governed solely by the per-call circuit breaker, so they are skipped.
+        """
         for node in self.nodes:
+            if node.backend != "ollama":
+                continue
             try:
                 response = await self._get_http().get(
                     f"{node.base_url}/api/tags", timeout=3.0
@@ -458,25 +485,46 @@ def build_default_pool() -> LLMPool:
     Returns:
         A pool with the single-machine core configuration.
     """
-    grouped: dict[tuple[str, str], LLMNode] = {}
-    specs = (
-        ("chat", settings.chat_model, Capability.CHAT, True),
-        ("coder", settings.coder_model, Capability.CODER, True),
-        ("reasoner", settings.reasoner_model, Capability.REASONER, True),
-        ("fallback", settings.fallback_model, Capability.FALLBACK, True),
-        ("vision", settings.vision_model, Capability.VISION, False),
+    # Optional cloud code backend: route CODER/REASONER to the Claude API while
+    # chat/router, fallback, and vision stay local. Fallback stays Ollama so a
+    # cloud outage degrades to local instead of failing.
+    use_anthropic = settings.code_backend == "anthropic" and bool(
+        settings.anthropic_api_key
     )
-    for name, model, capability, warm_up in specs:
+    if use_anthropic:
+        code_model, code_backend = settings.anthropic_model, "anthropic"
+        code_warm = False
+    else:
+        code_model, code_backend = settings.coder_model, "ollama"
+        code_warm = True
+
+    grouped: dict[tuple[str, str, str], LLMNode] = {}
+    specs = (
+        ("chat", settings.chat_model, Capability.CHAT, True, "ollama"),
+        ("coder", code_model, Capability.CODER, code_warm, code_backend),
+        (
+            "reasoner",
+            code_model if use_anthropic else settings.reasoner_model,
+            Capability.REASONER,
+            code_warm,
+            code_backend,
+        ),
+        ("fallback", settings.fallback_model, Capability.FALLBACK, True, "ollama"),
+        ("vision", settings.vision_model, Capability.VISION, False, "ollama"),
+    )
+    for name, model, capability, warm_up, backend in specs:
         if not model:
             continue
-        key = (settings.ollama_base_url, model)
+        base_url = settings.ollama_base_url if backend == "ollama" else "anthropic"
+        key = (backend, base_url, model)
         if key not in grouped:
             grouped[key] = LLMNode(
                 name=name,
-                base_url=settings.ollama_base_url,
+                base_url=base_url,
                 model=model,
                 capabilities=set(),
                 warm_up=warm_up,
+                backend=backend,
             )
         else:
             grouped[key].name = f"{grouped[key].name}+{name}"
