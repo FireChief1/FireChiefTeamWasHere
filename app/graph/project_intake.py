@@ -24,6 +24,8 @@ _EXCERPT_SUFFIXES = {
     ".yml",
     ".yaml",
 }
+_EDIT_TARGET_MAX_FILES = 3
+_EDIT_TARGET_MAX_CHARS = 8000
 _PROJECT_FALLBACK_FILES = (
     "README.md",
     "docs/architecture.md",
@@ -80,6 +82,11 @@ async def project_intake_node(state: AgentState) -> dict[str, Any]:
         )
         relevant_files = project_relevant_files(files, matches)
         file_excerpts = await project_file_excerpts(tools, relevant_files)
+        edit_targets = (
+            await project_edit_target_files(tools, state["task"], files)
+            if state.get("project_chat_action") == "modify_project"
+            else []
+        )
         if settings.project_explore_enabled:
             relevant_files, file_excerpts = await _explore_and_merge(
                 task=state["task"],
@@ -96,6 +103,7 @@ async def project_intake_node(state: AgentState) -> dict[str, Any]:
         "project_relevant_files": relevant_files,
         "project_search_matches": matches,
         "project_file_excerpts": file_excerpts,
+        "project_edit_targets": edit_targets,
         "project_git_status": git_status,
         "project_git_diff": git_diff,
         "project_path": str(project_path),
@@ -122,6 +130,7 @@ def _path_mismatch_update(project_path: Path, mcp_root: Path) -> dict[str, Any]:
         "project_relevant_files": [],
         "project_search_matches": [],
         "project_file_excerpts": [],
+        "project_edit_targets": [],
         "project_git_status": "",
         "project_git_diff": "",
         "project_path": str(project_path),
@@ -237,6 +246,47 @@ async def project_file_excerpts(
             }
         )
     return excerpts
+
+
+def task_edit_target_files(task: str, files: list[str]) -> list[str]:
+    """Return existing files the task explicitly names, to edit in full.
+
+    High precision: a file qualifies only when its relative path or basename
+    (with extension) appears in the task text, so create/analysis tasks add no
+    edit targets.
+    """
+    task_lower = task.casefold()
+    targets: list[str] = []
+    for filename in files:
+        name = Path(filename).name
+        named = filename.casefold() in task_lower or name.casefold() in task_lower
+        if named and filename not in targets:
+            targets.append(filename)
+        if len(targets) >= _EDIT_TARGET_MAX_FILES:
+            break
+    return targets
+
+
+async def project_edit_target_files(
+    tools: Any,
+    task: str,
+    files: list[str],
+) -> list[dict[str, object]]:
+    """Read full content of the files the task names so edits do not truncate."""
+    targets: list[dict[str, object]] = []
+    for filename in task_edit_target_files(task, files):
+        try:
+            content = await tools.read_file(filename)
+        except Exception:  # noqa: BLE001 - skip unreadable targets
+            continue
+        targets.append(
+            {
+                "file": filename,
+                "content": content[:_EDIT_TARGET_MAX_CHARS],
+                "truncated": len(content) > _EDIT_TARGET_MAX_CHARS,
+            }
+        )
+    return targets
 
 
 def project_summary(

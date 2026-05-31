@@ -76,6 +76,7 @@ class AgentState(TypedDict, total=False):
         project_relevant_files: Files selected as most relevant to the task.
         project_search_matches: Search matches that explain relevance.
         project_file_excerpts: Small excerpts from relevant files for grounding.
+        project_edit_targets: Full content of files the task names for editing.
         project_git_status: Current repository status summary.
         project_git_diff: Bounded git diff summary for the current repository.
         project_summary: Human-readable project intake summary.
@@ -142,6 +143,7 @@ class AgentState(TypedDict, total=False):
     project_relevant_files: list[str]
     project_search_matches: list[dict[str, object]]
     project_file_excerpts: list[dict[str, object]]
+    project_edit_targets: list[dict[str, object]]
     project_git_status: str
     project_git_diff: str
     project_summary: str

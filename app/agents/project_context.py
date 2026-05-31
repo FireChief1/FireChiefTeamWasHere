@@ -48,6 +48,25 @@ def project_context_section(state: AgentState) -> str:
             lines.append("Risks: " + " | ".join(risks[:5]))
         parts.append("PROJECT BRIEF:\n" + "\n".join(lines))
 
+    edit_targets = state.get("project_edit_targets") or []
+    if edit_targets:
+        lines = []
+        for target in edit_targets[:3]:
+            filename = target.get("file")
+            content = target.get("content")
+            if not filename or not isinstance(content, str):
+                continue
+            suffix = "\n[truncated]" if target.get("truncated") else ""
+            lines.append(f"# {filename}\n{content}{suffix}")
+        if lines:
+            parts.append(
+                "FILES TO EDIT -- this is the CURRENT full content of the "
+                "file(s) the task asks to change. Return the COMPLETE updated "
+                "file for each (same filename), preserving everything you are "
+                "not explicitly changing. Do not shorten or drop unrelated "
+                "code:\n" + "\n\n".join(lines)
+            )
+
     excerpts = state.get("project_file_excerpts") or []
     if excerpts:
         lines = []
