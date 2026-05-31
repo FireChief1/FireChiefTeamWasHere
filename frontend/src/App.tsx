@@ -541,13 +541,31 @@ function ChatTimeline({
             <span className="message-source">gönderiliyor</span>
           </article>
           <article className="message assistant pending">
-            <p>Yanıt hazırlanıyor...</p>
+            <p>
+              <span className="pulse-dot" aria-hidden="true" /> Yanıt hazırlanıyor…{" "}
+              <PendingTimer />
+            </p>
+            <p className="pending-hint">
+              Lokal modellerde bir görev 1–3 dk sürebilir. Sayfayı yenileme veya
+              tekrar gönderme — bittiğinde sonuç burada belirir.
+            </p>
             <span className="message-source">çalışıyor</span>
           </article>
         </>
       )}
     </div>
   );
+}
+
+function PendingTimer() {
+  const [seconds, setSeconds] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setSeconds((value) => value + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const mm = Math.floor(seconds / 60);
+  const ss = String(seconds % 60).padStart(2, "0");
+  return <span className="pending-timer">{mm}:{ss}</span>;
 }
 
 function RoutePanel({ route }: { route: RouteDecision | null }) {
