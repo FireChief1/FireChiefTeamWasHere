@@ -42,6 +42,8 @@ class ApiHandler(BaseHTTPRequestHandler):
         try:
             if parsed.path == "/api/health":
                 self._send_json({"status": "ok"})
+            elif parsed.path == "/api/capabilities":
+                self._send_json(capabilities_payload())
             elif parsed.path == "/api/projects":
                 self._send_json({"projects": list_projects_payload()})
             elif parsed.path == "/api/project":
@@ -72,6 +74,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                         message=str(payload.get("message") or ""),
                         max_iterations=int(payload.get("maxIterations") or 3),
                         use_rag=bool(payload.get("useRag", True)),
+                        code_backend=str(payload.get("codeBackend") or ""),
                         image_attachment=payload.get("image"),
                     )
                 )
@@ -124,6 +127,16 @@ class ApiHandler(BaseHTTPRequestHandler):
 
     def _send_error(self, status: HTTPStatus, message: str) -> None:
         self._send_json({"error": message}, status=status)
+
+
+def capabilities_payload() -> dict[str, Any]:
+    """Report which code backends the UI may offer and the default."""
+    from app.config import settings
+    from app.llm.pool import anthropic_available
+
+    anthropic = anthropic_available()
+    default = "anthropic" if (settings.code_backend == "anthropic" and anthropic) else "ollama"
+    return {"anthropicAvailable": anthropic, "defaultCodeBackend": default}
 
 
 def list_folders(path: str) -> dict[str, Any]:

@@ -97,6 +97,10 @@ class LLMPool:
         self.circuit_threshold = settings.circuit_breaker_threshold
         self.max_retries = settings.max_retries
         self.health_interval = settings.health_check_interval
+        # Default code backend ("ollama" | "anthropic"); a per-call prefer_backend
+        # overrides it. Resolves to whatever node is available if the preferred
+        # backend has no usable node (graceful local fallback).
+        self.default_code_backend = settings.code_backend
         self._http_limits = httpx.Limits(
             max_connections=20, max_keepalive_connections=10
         )
@@ -130,14 +134,20 @@ class LLMPool:
 
     # --- node selection ---
 
-    def pick_node(self, capability: Capability) -> LLMNode:
+    def pick_node(
+        self, capability: Capability, *, prefer_backend: str | None = None
+    ) -> LLMNode:
         """Select a usable node for the given capability.
 
-        Prefers a node that natively serves the capability. Falls back to any
-        node that serves FALLBACK if no dedicated node is available.
+        Prefers a node that natively serves the capability, and among those a
+        node on the preferred backend (the per-call ``prefer_backend`` or the
+        pool default). Falls back to any node serving FALLBACK when no dedicated
+        node is available, so a preferred-backend outage still resolves.
 
         Args:
             capability: The capability the caller needs.
+            prefer_backend: Preferred backend for this call ("ollama" |
+                "anthropic"); falls back to other backends if unavailable.
 
         Returns:
             The least-failed usable node for the capability.
@@ -145,13 +155,14 @@ class LLMPool:
         Raises:
             NoHealthyNodeError: If no node can serve the request at all.
         """
+        backend = prefer_backend or self.default_code_backend
         candidates = [
             n
             for n in self.nodes
             if capability in n.capabilities and n.is_usable(self.circuit_threshold)
         ]
         if candidates:
-            return min(candidates, key=lambda n: n.failure_count)
+            return self._least_failed(candidates, backend)
 
         if capability != Capability.VISION:
             fallback = [
@@ -164,11 +175,17 @@ class LLMPool:
                 logger.warning(
                     f"no dedicated node for {capability.value}; using fallback"
                 )
-                return min(fallback, key=lambda n: n.failure_count)
+                return self._least_failed(fallback, backend)
 
         raise NoHealthyNodeError(
             f"no healthy node for capability {capability.value}"
         )
+
+    @staticmethod
+    def _least_failed(nodes: list[LLMNode], backend: str) -> LLMNode:
+        """Pick the least-failed node, preferring the requested backend."""
+        preferred = [n for n in nodes if n.backend == backend]
+        return min(preferred or nodes, key=lambda n: n.failure_count)
 
     @property
     def is_degraded(self) -> bool:
@@ -190,6 +207,7 @@ class LLMPool:
         *,
         capability: Capability,
         temperature: float = 0.2,
+        prefer_backend: str | None = None,
     ) -> str:
         """Generate a plain-text completion for the given messages.
 
@@ -210,7 +228,9 @@ class LLMPool:
             response = await model.ainvoke(messages)
             return str(response.content)
 
-        return await self._execute(capability, temperature, run)
+        return await self._execute(
+            capability, temperature, run, prefer_backend=prefer_backend
+        )
 
     async def agenerate_with_image(
         self,
@@ -279,6 +299,7 @@ class LLMPool:
         capability: Capability,
         schema: type[T],
         temperature: float = 0.2,
+        prefer_backend: str | None = None,
     ) -> T:
         """Generate a response validated against a Pydantic schema.
 
@@ -320,7 +341,9 @@ class LLMPool:
                 ),
             ]
 
-        return await self._execute(capability, temperature, run, on_error=repair)
+        return await self._execute(
+            capability, temperature, run, on_error=repair, prefer_backend=prefer_backend
+        )
 
     async def _execute(
         self,
@@ -329,6 +352,7 @@ class LLMPool:
         run: Callable[[BaseChatModel], Awaitable[R]],
         *,
         on_error: Callable[[Exception], None] | None = None,
+        prefer_backend: str | None = None,
     ) -> R:
         """Run `run` against a picked node, with retry and circuit breaker.
 
@@ -339,7 +363,7 @@ class LLMPool:
         """
         last_error: Exception | None = None
         for attempt in range(self.max_retries):
-            node = self.pick_node(capability)
+            node = self.pick_node(capability, prefer_backend=prefer_backend)
             model = self._chat_model(node, temperature)
             try:
                 result = await run(model)
@@ -474,6 +498,11 @@ class LLMPool:
         self._http_loop = None
 
 
+def anthropic_available() -> bool:
+    """Return True when a Claude API key is configured."""
+    return bool(settings.anthropic_api_key)
+
+
 def build_default_pool() -> LLMPool:
     """Build the single-machine core pool from configured capability models.
 
@@ -485,33 +514,42 @@ def build_default_pool() -> LLMPool:
     Returns:
         A pool with the single-machine core configuration.
     """
-    # Optional cloud code backend: route CODER/REASONER to the Claude API while
-    # chat/router, fallback, and vision stay local. Fallback stays Ollama so a
-    # cloud outage degrades to local instead of failing.
-    use_anthropic = settings.code_backend == "anthropic" and bool(
-        settings.anthropic_api_key
-    )
-    if use_anthropic:
-        code_model, code_backend = settings.anthropic_model, "anthropic"
-        code_warm = False
-    else:
-        code_model, code_backend = settings.coder_model, "ollama"
-        code_warm = True
+    # Both code backends coexist when a Claude key is configured, so the UI can
+    # switch local<->cloud per request. The local code node only warms at startup
+    # when Ollama is the default (avoid loading the coder model when defaulting to
+    # cloud). chat/router, fallback, and vision are always local, so a cloud
+    # outage degrades to local instead of failing.
+    anthropic_on = anthropic_available()
+    cloud_default = settings.code_backend == "anthropic" and anthropic_on
+    local_code_warm = not cloud_default
 
     grouped: dict[tuple[str, str, str], LLMNode] = {}
-    specs = (
+    specs = [
         ("chat", settings.chat_model, Capability.CHAT, True, "ollama"),
-        ("coder", code_model, Capability.CODER, code_warm, code_backend),
+        ("coder", settings.coder_model, Capability.CODER, local_code_warm, "ollama"),
         (
             "reasoner",
-            code_model if use_anthropic else settings.reasoner_model,
+            settings.reasoner_model,
             Capability.REASONER,
-            code_warm,
-            code_backend,
+            local_code_warm,
+            "ollama",
         ),
         ("fallback", settings.fallback_model, Capability.FALLBACK, True, "ollama"),
         ("vision", settings.vision_model, Capability.VISION, False, "ollama"),
-    )
+    ]
+    if anthropic_on:
+        specs.append(
+            ("claude-coder", settings.anthropic_model, Capability.CODER, False, "anthropic")
+        )
+        specs.append(
+            (
+                "claude-reasoner",
+                settings.anthropic_model,
+                Capability.REASONER,
+                False,
+                "anthropic",
+            )
+        )
     for name, model, capability, warm_up, backend in specs:
         if not model:
             continue

@@ -299,15 +299,22 @@ def test_build_default_pool_routes_code_to_anthropic_when_enabled(monkeypatch):
     monkeypatch.setattr(pool_module.settings, "anthropic_api_key", "sk-test")
     monkeypatch.setattr(pool_module.settings, "anthropic_model", "claude-sonnet-4-6")
 
+    monkeypatch.setattr(pool_module.settings, "coder_model", "qwen2.5-coder:14b")
+    monkeypatch.setattr(pool_module.settings, "reasoner_model", "qwen2.5-coder:14b")
+
     pool = build_default_pool()
     code_nodes = [n for n in pool.nodes if Capability.CODER in n.capabilities]
-    assert len(code_nodes) == 1
-    code = code_nodes[0]
-    # Code agents go to the cloud; reasoner rides the same node.
-    assert code.backend == "anthropic"
-    assert code.model == "claude-sonnet-4-6"
-    assert Capability.REASONER in code.capabilities
-    assert code.warm_up is False
+    # Both backends coexist so the UI can switch per request.
+    assert {n.backend for n in code_nodes} == {"ollama", "anthropic"}
+    cloud = next(n for n in code_nodes if n.backend == "anthropic")
+    assert cloud.model == "claude-sonnet-4-6"
+    assert Capability.REASONER in cloud.capabilities
+    assert cloud.warm_up is False
+
+    # Default backend is anthropic, so CODER picks the cloud node...
+    assert pool.pick_node(Capability.CODER).backend == "anthropic"
+    # ...but an explicit per-request preference selects the local node.
+    assert pool.pick_node(Capability.CODER, prefer_backend="ollama").backend == "ollama"
 
     # Chat and fallback stay local so a cloud outage degrades, not fails.
     local = [n for n in pool.nodes if n.backend == "ollama"]

@@ -128,3 +128,8 @@ export type FolderListing = {
   parent: string;
   folders: FolderEntry[];
 };
+
+export type Capabilities = {
+  anthropicAvailable: boolean;
+  defaultCodeBackend: string;
+};

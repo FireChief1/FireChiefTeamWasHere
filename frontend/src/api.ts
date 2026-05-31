@@ -1,4 +1,5 @@
 import type {
+  Capabilities,
   FolderListing,
   ProjectBundle,
   ProjectApplyResponse,
@@ -23,6 +24,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return payload as T;
 }
 
+export function loadCapabilities(): Promise<Capabilities> {
+  return request<Capabilities>("/api/capabilities");
+}
+
 export async function loadProjects(): Promise<ProjectRecord[]> {
   const payload = await request<{ projects: ProjectRecord[] }>("/api/projects");
   return payload.projects;
@@ -45,6 +50,7 @@ export function sendProjectMessage(args: {
   message: string;
   maxIterations: number;
   useRag: boolean;
+  codeBackend?: string;
   image?: ImageAttachmentPayload;
 }): Promise<ProjectChatResponse> {
   return request<ProjectChatResponse>("/api/project-chat", {

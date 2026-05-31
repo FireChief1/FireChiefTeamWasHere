@@ -1074,6 +1074,39 @@ pre {
   }
 }
 
+/* --- Segmented control (e.g. code engine: Local / Claude) --- */
+.segmented {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  background: var(--surface-soft);
+}
+
+.segmented .seg {
+  min-height: 30px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 750;
+}
+
+.segmented .seg:hover:not(:disabled) {
+  background: transparent;
+  box-shadow: none;
+  color: var(--text);
+}
+
+.segmented .seg.active {
+  background: var(--green-soft);
+  color: var(--green);
+  box-shadow: inset 0 0 0 1px rgba(39, 216, 137, 0.4);
+}
+
 /* --- Header actions + theme toggle --- */
 .header-actions {
   display: flex;

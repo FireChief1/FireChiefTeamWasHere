@@ -2,12 +2,14 @@ import type { ChangeEvent, FormEvent, ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import {
   applyProjectChanges,
+  loadCapabilities,
   loadFolder,
   loadProjects,
   openProject,
   sendProjectMessage
 } from "./api";
 import type {
+  Capabilities,
   FolderListing,
   ImageAttachmentPayload,
   ProjectBundle,
@@ -47,6 +49,8 @@ function App() {
   const [route, setRoute] = useState<RouteDecision | null>(null);
   const [run, setRun] = useState<ProjectRun | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
+  const [codeBackend, setCodeBackend] = useState("");
   const [theme, setTheme] = useState<"space" | "light">(() => {
     try {
       return localStorage.getItem("ct-theme") === "light" ? "light" : "space";
@@ -58,6 +62,12 @@ function App() {
   useEffect(() => {
     void refreshProjects();
     void refreshFolder(DEFAULT_PATH);
+    void loadCapabilities()
+      .then((caps) => {
+        setCapabilities(caps);
+        setCodeBackend(caps.defaultCodeBackend);
+      })
+      .catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -133,6 +143,7 @@ function App() {
         message: cleanMessage,
         maxIterations,
         useRag,
+        codeBackend,
         image: attachedImage
           ? {
               name: attachedImage.name,
@@ -343,6 +354,27 @@ function App() {
             />
             <span>RAG bilgi tabanı</span>
           </label>
+          {capabilities?.anthropicAvailable && (
+            <div className="field-label">
+              Kod motoru
+              <div className="segmented">
+                <button
+                  type="button"
+                  className={codeBackend === "ollama" ? "seg active" : "seg"}
+                  onClick={() => setCodeBackend("ollama")}
+                >
+                  Lokal
+                </button>
+                <button
+                  type="button"
+                  className={codeBackend === "anthropic" ? "seg active" : "seg"}
+                  onClick={() => setCodeBackend("anthropic")}
+                >
+                  Claude
+                </button>
+              </div>
+            </div>
+          )}
         </section>
       </aside>
 

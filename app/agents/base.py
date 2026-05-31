@@ -87,6 +87,7 @@ class BaseAgent(ABC, Generic[T]):
             capability=self.capability,
             schema=self.output_schema(),
             temperature=self.temperature,
+            prefer_backend=state.get("code_backend") or None,
         )
         logger.info(f"[{self.name}] complete")
         return result

@@ -135,6 +135,7 @@ class AgentState(TypedDict, total=False):
     task_profile_reason: str
     max_iterations: int
     use_rag: bool
+    code_backend: str
     project_path: str
     project_mcp_root: str
     project_path_mismatch: bool
