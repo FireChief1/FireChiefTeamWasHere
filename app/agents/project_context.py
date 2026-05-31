@@ -64,7 +64,11 @@ def project_context_section(state: AgentState) -> str:
                 "file(s) the task asks to change. Return the COMPLETE updated "
                 "file for each (same filename), preserving everything you are "
                 "not explicitly changing. Do not shorten or drop unrelated "
-                "code:\n" + "\n\n".join(lines)
+                "code. CRITICAL: keep all existing text, headings, links, and "
+                "the page's SUBJECT exactly as they are. If the task is about "
+                "design, style, layout, or 'making it modern', change only the "
+                "CSS, classes, and markup structure -- never the wording, the "
+                "topic, or invent new placeholder content:\n" + "\n\n".join(lines)
             )
 
     excerpts = state.get("project_file_excerpts") or []
