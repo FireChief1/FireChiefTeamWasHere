@@ -348,23 +348,54 @@ pre {
 }
 
 .folder-current {
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
   border: 1px solid var(--line);
   border-radius: 7px;
   background: rgba(16, 20, 42, 0.8);
   color: var(--muted);
   font-size: 12px;
-  padding: 9px 10px;
+  padding: 8px 10px;
 }
 
 .folder-list {
-  max-height: 240px;
+  max-height: 220px;
   overflow-y: auto;
+  gap: 4px;
 }
 
 .folder-list button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 10px;
   justify-content: flex-start;
   text-align: left;
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-list button::before {
+  content: "📁";
+  flex: 0 0 auto;
+  font-size: 12px;
+  filter: grayscale(0.2);
+}
+
+.folder-list button:hover:not(:disabled) {
+  background: var(--surface-soft);
+  border-color: var(--line-strong);
+  color: var(--text);
+  box-shadow: none;
 }
 
 .field-label,

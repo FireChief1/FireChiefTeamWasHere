@@ -50,7 +50,13 @@ function App() {
   const [run, setRun] = useState<ProjectRun | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
-  const [codeBackend, setCodeBackend] = useState("");
+  const [codeBackend, setCodeBackend] = useState<string>(() => {
+    try {
+      return localStorage.getItem("ct-code-backend") || "";
+    } catch {
+      return "";
+    }
+  });
   const [theme, setTheme] = useState<"space" | "light">(() => {
     try {
       return localStorage.getItem("ct-theme") === "light" ? "light" : "space";
@@ -65,10 +71,24 @@ function App() {
     void loadCapabilities()
       .then((caps) => {
         setCapabilities(caps);
-        setCodeBackend(caps.defaultCodeBackend);
+        // Keep the user's saved choice; fall back to the server default when
+        // unset, or to local if their saved cloud choice is no longer available.
+        setCodeBackend((prev) => {
+          if (prev === "anthropic" && !caps.anthropicAvailable) return "ollama";
+          return prev || caps.defaultCodeBackend;
+        });
       })
       .catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    if (!codeBackend) return;
+    try {
+      localStorage.setItem("ct-code-backend", codeBackend);
+    } catch {
+      /* storage unavailable; selection still applies for this session */
+    }
+  }, [codeBackend]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
