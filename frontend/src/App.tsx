@@ -1,4 +1,5 @@
-import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
+import type { ChangeEvent, FormEvent, ReactNode } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   applyProjectChanges,
   loadFolder,
@@ -46,11 +47,27 @@ function App() {
   const [route, setRoute] = useState<RouteDecision | null>(null);
   const [run, setRun] = useState<ProjectRun | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [theme, setTheme] = useState<"space" | "light">(() => {
+    try {
+      return localStorage.getItem("ct-theme") === "light" ? "light" : "space";
+    } catch {
+      return "space";
+    }
+  });
 
   useEffect(() => {
     void refreshProjects();
     void refreshFolder(DEFAULT_PATH);
   }, []);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    try {
+      localStorage.setItem("ct-theme", theme);
+    } catch {
+      /* storage unavailable; theme still applies for this session */
+    }
+  }, [theme]);
 
   const chatEvents = useMemo(
     () =>
@@ -353,7 +370,18 @@ function App() {
             <h2>{bundle?.project.name || "Proje seç"}</h2>
             <p>{bundle?.project.path || "Sol taraftan bir klasör aç."}</p>
           </div>
-          <StatusBadge status={bundle?.project.lastStatus || "READY"} />
+          <div className="header-actions">
+            <button
+              type="button"
+              className="theme-toggle"
+              onClick={() => setTheme((t) => (t === "space" ? "light" : "space"))}
+              aria-label="Temayı değiştir"
+              title="Temayı değiştir"
+            >
+              {theme === "space" ? "☀ Light" : "☾ Space"}
+            </button>
+            <StatusBadge status={bundle?.project.lastStatus || "READY"} />
+          </div>
         </header>
 
         {notice && <NoticeBar notice={notice} />}
@@ -361,7 +389,12 @@ function App() {
         <section className="content-grid">
           <div className="chat-column">
             <ProjectSummary project={bundle?.project || null} />
-            <ChatTimeline events={chatEvents} pendingMessage={pendingMessage} />
+            <ChatTimeline
+              events={chatEvents}
+              pendingMessage={pendingMessage}
+              ready={!!bundle}
+              onPick={(text) => setMessage(text)}
+            />
             <form className="composer" onSubmit={handleSend}>
               <div className="composer-main">
                 <textarea
@@ -437,18 +470,50 @@ function ProjectSummary({ project }: { project: ProjectRecord | null }) {
   );
 }
 
+const CHAT_SUGGESTIONS = [
+  "Bu projeyi analiz et ve bir sonraki adımı öner",
+  "Python ile bir Stack sınıfı yaz",
+  "Node ile bir argümanları toplayan modül yaz ve test et",
+  "Basit bir HTML/CSS landing page oluştur",
+];
+
 function ChatTimeline({
   events,
-  pendingMessage
+  pendingMessage,
+  ready,
+  onPick,
 }: {
   events: ProjectTimelineEvent[];
   pendingMessage: string;
+  ready: boolean;
+  onPick: (text: string) => void;
 }) {
   if (events.length === 0 && !pendingMessage) {
     return (
       <div className="empty-chat">
-        <h3>Henüz sohbet yok</h3>
-        <p>Mesaj sohbet ise direkt yanıtlanır; analiz veya kod görevi ise ajan akışı başlar.</p>
+        <span className="empty-orbit" aria-hidden="true" />
+        <h3>Sohbete başla</h3>
+        <p>
+          Mesaj sohbet ise direkt yanıtlanır; analiz veya kod görevi ise çok-ajanlı
+          akış başlar. Python, Node.js ve statik web üretebilir, var olan dosyaları
+          düzenleyebilir.
+        </p>
+        {ready ? (
+          <div className="suggestion-chips">
+            {CHAT_SUGGESTIONS.map((text) => (
+              <button
+                type="button"
+                key={text}
+                className="suggestion-chip"
+                onClick={() => onPick(text)}
+              >
+                {text}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <p className="muted">Başlamak için soldan bir proje aç.</p>
+        )}
       </div>
     );
   }
@@ -460,7 +525,7 @@ function ChatTimeline({
           className={event.role === "user" ? "message user" : "message assistant"}
           key={event.id}
         >
-          <p>{event.body}</p>
+          <div className="message-body">{renderMessageBody(event.body)}</div>
           {event.role === "assistant" && responseSourceFromEvent(event) && (
             <span className="message-source">
               {sourceLabel(responseSourceFromEvent(event))}
@@ -558,7 +623,11 @@ function CheckpointPanel({ checkpoints }: { checkpoints: ProjectCheckpoint[] }) 
             <article key={checkpoint.id}>
               <div>
                 <strong>{checkpoint.status}</strong>
-                <span>{checkpoint.taskProfile || "profile yok"}</span>
+                {checkpoint.taskProfile ? (
+                  <ProfileBadge profile={checkpoint.taskProfile} />
+                ) : (
+                  <span>profile yok</span>
+                )}
               </div>
               <p>{checkpoint.task}</p>
             </article>
@@ -580,7 +649,10 @@ function RunPanel({
 }) {
   return (
     <section className="panel detail-panel">
-      <h2>Teknik Sonuç</h2>
+      <div className="panel-heading">
+        <h2>Teknik Sonuç</h2>
+        {run?.taskProfile && <ProfileBadge profile={run.taskProfile} />}
+      </div>
       {!run ? (
         <p className="muted">Ajan akışı çalışınca burada görünür.</p>
       ) : (
@@ -742,6 +814,52 @@ function PendingApplyPanel({
 
 function StatusBadge({ status }: { status: string }) {
   return <span className={`status-badge ${status.toLowerCase()}`}>{status}</span>;
+}
+
+const PROFILE_LABELS: Record<string, string> = {
+  python: "Python",
+  node_js: "Node.js",
+  static_web: "Web",
+  docs: "Docs",
+  project: "Project",
+};
+
+function ProfileBadge({ profile }: { profile: string }) {
+  const key = profile.toLowerCase();
+  return (
+    <span className={`profile-badge profile-${key}`}>
+      {PROFILE_LABELS[key] || profile}
+    </span>
+  );
+}
+
+function stripLanguageTag(block: string): string {
+  const newline = block.indexOf("\n");
+  if (newline === -1) {
+    return block;
+  }
+  const firstLine = block.slice(0, newline).trim();
+  if (firstLine && /^[a-zA-Z0-9_+#.-]{1,15}$/.test(firstLine)) {
+    return block.slice(newline + 1);
+  }
+  return block;
+}
+
+function renderMessageBody(text: string): ReactNode {
+  // Lightweight, dependency-free rendering: split on ``` fences so code blocks
+  // get monospace styling while prose stays readable.
+  const segments = text.split("```");
+  return segments.map((segment, index) => {
+    if (index % 2 === 1) {
+      return (
+        <pre className="code-block" key={index}>
+          <code>{stripLanguageTag(segment).replace(/\n+$/, "")}</code>
+        </pre>
+      );
+    }
+    const trimmed = segment.replace(/^\n+|\n+$/g, "");
+    return trimmed ? <p key={index}>{trimmed}</p> : null;
+  });
 }
 
 function NoticeBar({ notice }: { notice: Notice }) {

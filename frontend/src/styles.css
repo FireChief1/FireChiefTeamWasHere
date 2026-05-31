@@ -1037,3 +1037,233 @@ pre {
     grid-column: 1 / -1;
   }
 }
+
+/* --- Header actions + theme toggle --- */
+.header-actions {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.theme-toggle {
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.theme-toggle:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--violet);
+}
+
+/* --- Enriched empty state --- */
+.empty-orbit {
+  position: relative;
+  width: 66px;
+  height: 66px;
+  margin: 0 auto 16px;
+  border: 2px solid var(--line-strong);
+  border-radius: 50%;
+  box-shadow:
+    inset 0 0 26px rgba(157, 123, 255, 0.32),
+    0 0 34px rgba(86, 199, 255, 0.18);
+}
+
+.empty-orbit::after {
+  content: "";
+  position: absolute;
+  top: -6px;
+  left: 50%;
+  width: 10px;
+  height: 10px;
+  margin-left: -5px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 12px var(--green);
+}
+
+.suggestion-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+  margin-top: 16px;
+}
+
+.suggestion-chip {
+  max-width: 100%;
+  border-radius: 999px;
+  border-color: var(--line-strong);
+  background: var(--surface-soft);
+  color: var(--text);
+  padding: 8px 13px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.suggestion-chip:hover:not(:disabled) {
+  border-color: var(--violet);
+  background: var(--violet-soft);
+}
+
+/* --- Message typography + code blocks --- */
+.message-body > :first-child {
+  margin-top: 0;
+}
+
+.message-body p {
+  margin: 0 0 9px;
+  white-space: pre-wrap;
+}
+
+.message-body p:last-child {
+  margin-bottom: 0;
+}
+
+.code-block {
+  margin: 4px 0 9px;
+  max-height: 360px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #020417;
+  color: #dbe7ff;
+  padding: 12px;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.code-block:last-child {
+  margin-bottom: 0;
+}
+
+/* --- Color-coded profile badges --- */
+.profile-badge {
+  flex: 0 0 auto;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  padding: 3px 9px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+}
+
+.profile-python {
+  color: #56c7ff;
+  border-color: rgba(86, 199, 255, 0.42);
+  background: rgba(86, 199, 255, 0.12);
+}
+
+.profile-node_js {
+  color: #27d889;
+  border-color: rgba(39, 216, 137, 0.42);
+  background: rgba(39, 216, 137, 0.12);
+}
+
+.profile-static_web {
+  color: #e6c66b;
+  border-color: rgba(230, 198, 107, 0.42);
+  background: rgba(230, 198, 107, 0.12);
+}
+
+.profile-docs {
+  color: #9d7bff;
+  border-color: rgba(157, 123, 255, 0.42);
+  background: rgba(157, 123, 255, 0.16);
+}
+
+.profile-project {
+  color: #ff9bb0;
+  border-color: rgba(255, 107, 138, 0.42);
+  background: rgba(255, 107, 138, 0.12);
+}
+
+/* --- Light theme --- */
+:root[data-theme="light"] {
+  color-scheme: light;
+  color: #1b2440;
+  background: #eef1fb;
+  --bg: #eef1fb;
+  --surface: #ffffff;
+  --surface-soft: #f3f5fd;
+  --surface-strong: #e6eaf7;
+  --line: #d7ddf1;
+  --line-strong: #b9c2e6;
+  --text: #1b2440;
+  --muted: #55608a;
+  --subtle: #828bb2;
+  --green: #11a06a;
+  --green-soft: rgba(17, 160, 106, 0.12);
+  --blue: #2b7fd6;
+  --blue-soft: rgba(43, 127, 214, 0.12);
+  --amber: #a9760f;
+  --amber-soft: rgba(169, 118, 15, 0.14);
+  --red: #d23b5e;
+  --red-soft: rgba(210, 59, 94, 0.12);
+  --violet: #6d4fe0;
+  --violet-soft: rgba(109, 79, 224, 0.12);
+  --star: rgba(70, 80, 130, 0.45);
+  --shadow: 0 16px 40px rgba(40, 50, 90, 0.12);
+}
+
+:root[data-theme="light"] .app-shell {
+  background:
+    radial-gradient(900px 600px at 82% -8%, rgba(109, 79, 224, 0.1), transparent 60%),
+    radial-gradient(820px 560px at 8% 108%, rgba(43, 127, 214, 0.08), transparent 60%),
+    linear-gradient(160deg, #f5f7ff 0%, #eef1fb 100%);
+}
+
+:root[data-theme="light"] .sidebar {
+  border-right-color: var(--line);
+  background:
+    linear-gradient(180deg, rgba(109, 79, 224, 0.06), rgba(43, 127, 214, 0.02)),
+    #ffffff;
+}
+
+:root[data-theme="light"] .panel,
+:root[data-theme="light"] .summary-strip,
+:root[data-theme="light"] .brand-mark {
+  background: #ffffff;
+}
+
+:root[data-theme="light"] .workspace-header,
+:root[data-theme="light"] .mobile-bar {
+  background: rgba(255, 255, 255, 0.85);
+}
+
+:root[data-theme="light"] .composer {
+  background: rgba(255, 255, 255, 0.92);
+}
+
+:root[data-theme="light"] button:hover:not(:disabled) {
+  background: var(--surface-soft);
+}
+
+:root[data-theme="light"] .message.assistant {
+  background: var(--surface-soft);
+  border-color: var(--line);
+}
+
+:root[data-theme="light"] .message-source,
+:root[data-theme="light"] .status-note,
+:root[data-theme="light"] .folder-current {
+  background: var(--surface-soft);
+}
+
+:root[data-theme="light"] .primary {
+  color: #ffffff;
+}
+
+/* Code stays dark in light mode for readability, like most editors. */
+:root[data-theme="light"] .code-block,
+:root[data-theme="light"] .diff-preview,
+:root[data-theme="light"] .rejected-code pre,
+:root[data-theme="light"] .memory-preview {
+  background: #0f1530;
+  color: #e7ecff;
+  border-color: #1f2747;
+}
