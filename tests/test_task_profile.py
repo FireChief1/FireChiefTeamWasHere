@@ -32,6 +32,21 @@ def test_router_language_javascript_routes_to_node_profile():
     assert profile == "node_js"
 
 
+def test_explicit_html_overrides_wrong_router_language():
+    # Regression: a router mislabel ("python") on an obvious index.html task must
+    # not route to the Python profile (which rejected the HTML as invalid Python).
+    profile, _reason = classify_task_profile(
+        {
+            "task": "Butonlari duzelt, index.html dosyasini guncelle",
+            "mode": "project",
+            "project_chat_intent": "implementation",
+            "project_chat_action": "modify_project",
+            "project_chat_language": "python",
+        }
+    )
+    assert profile == "static_web"
+
+
 def test_javascript_with_web_signal_stays_static_web():
     # JS that is really a web page (HTML/CSS context) routes to static_web.
     profile, _reason = classify_task_profile(

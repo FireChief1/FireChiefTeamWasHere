@@ -156,13 +156,16 @@ def classify_task_profile(state: AgentState) -> tuple[TaskProfile, str]:
     router_language = _normalized_task(str(state.get("project_chat_language") or ""))
     mapped_profile = _LANGUAGE_TO_PROFILE.get(router_language)
     if mapped_profile is not None and has_implementation_signal:
-        # A JavaScript task that is really a web page (HTML/CSS) belongs to the
-        # static web profile, not the standalone Node profile.
-        if mapped_profile == "node_js" and has_static_web_signal:
+        # Explicit web signals in the task (html, css, page, site, index.html)
+        # are high-precision user intent and outrank a fallible router language
+        # guess that points at a non-web profile. Without this, a router
+        # mislabel like 'python' on an obvious HTML task routes to the Python
+        # profile and the generated HTML is rejected as invalid Python.
+        if mapped_profile != "static_web" and has_static_web_signal:
             return (
                 "static_web",
-                f"Router named '{router_language}' but the task targets a web "
-                "page (HTML/CSS), so it uses the static web profile.",
+                f"Task explicitly references web artifacts (HTML/CSS), so it "
+                f"overrides the router language '{router_language}'.",
             )
         return (
             mapped_profile,
